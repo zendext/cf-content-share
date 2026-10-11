@@ -145,7 +145,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                 store::limit(env, "TOTAL_STORAGE_BYTES")?.unwrap_or(9_007_199_254_740_991) as f64;
             db.batch(vec![
                 db.prepare("UPDATE resources SET accounting='reserved',file_key=? WHERE id=? AND state='pending' AND accounting='released' AND (SELECT published_bytes+reserved_bytes+cleanup_bytes FROM storage_usage WHERE id=1)<=?-size_bytes AND EXISTS(SELECT 1 FROM operations WHERE id=? AND upload_state='needs_reupload' AND (status!='running' OR lease_until<=?))").bind(&[key.into(),resource.id.into(),total.into(),operation_id.clone().into(),now.into()])?,
-                db.prepare("UPDATE operations SET upload_state='uploading',upload_token=?,status='running',lease_token=?,lease_until=?,next_retry_at=?,updated_at=?,r2_status='pending',error_code=NULL,retry_count=0,total_attempts=total_attempts+1 WHERE id=? AND changes()>0").bind(&[token.clone().into(),token.clone().into(),(now+UPLOAD_LEASE as f64).into(),(now+UPLOAD_LEASE as f64).into(),now.into(),operation_id.clone().into()])?
+                db.prepare("UPDATE operations SET upload_state='uploading',upload_token=?,status='running',lease_token=?,lease_until=?,next_retry_at=?,updated_at=?,r2_status='pending',retry_count=0,total_attempts=total_attempts+1 WHERE id=? AND changes()>0").bind(&[token.clone().into(),token.clone().into(),(now+UPLOAD_LEASE as f64).into(),(now+UPLOAD_LEASE as f64).into(),now.into(),operation_id.clone().into()])?
             ]).await?;
             break;
         }
@@ -298,7 +298,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
 async fn finish_attempt(env: &Env, id: &str, token: &str, stored: bool) -> Result<()> {
     // The request's put settled (or heartbeat lost); recovery still fences before releasing.
     let now = store::now();
-    env.d1("DB")?.prepare("UPDATE operations SET upload_state=?,status='pending',lease_token=NULL,lease_until=NULL,next_retry_at=?,updated_at=?,error_code=? WHERE id=? AND upload_token=? AND lease_token=?")
+    env.d1("DB")?.prepare("UPDATE operations SET upload_state=?,status='pending',lease_token=NULL,lease_until=NULL,next_retry_at=?,updated_at=?,error_code=COALESCE(?,error_code) WHERE id=? AND upload_token=? AND lease_token=?")
         .bind(&[(if stored{"stored"}else{"failed"}).into(),(now as f64).into(),(now as f64).into(),if stored{wasm_bindgen::JsValue::NULL}else{"UPLOAD_STREAM_OR_CHECKSUM_FAILED".into()},id.into(),token.into(),token.into()])?.run().await?;
     let _ = recovery::sync(env, id, false).await;
     Ok(())

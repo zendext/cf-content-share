@@ -485,7 +485,7 @@ test('length/hash/framing failures release only fenced reservations and allow sa
  }
  const data=Buffer.from('retransmit');const good=multipart(data);const bad={...good,body:good.body.subarray(0,good.body.length-12)};
  assert.equal((await upload(token,bad)).status,422);const old=await call('operation.get',{operation_id:good.metadata.operation_id});
- const res=await upload(token,good);assert.equal(res.status,201,await res.clone().text());const recovered=await res.json();assert.equal(recovered.resource.id,old.resource.id);assert.notEqual(recovered.resource.file_key,old.resource.file_key);
+ const res=await upload(token,good);assert.equal(res.status,201,await res.clone().text());const recovered=await res.json();assert.equal(recovered.resource.id,old.resource.id);assert.notEqual(recovered.resource.file_key,old.resource.file_key);assert.equal(recovered.operation.last_error.code,old.operation.last_error.code);assert.equal(recovered.operation.total_attempts,old.operation.total_attempts+1);
 });
 
 test('complete owned object is recovered after D1 publication failure',async()=>{

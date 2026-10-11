@@ -38,7 +38,7 @@ npm run init:cloud -- --config deployment.local.json --token-file /private/cloud
 
 第一条只发 GET，不创建资源、不写输出或锁文件。第二条才创建缺失的 D1/KV/R2 并原子写入 `0600` 的 `wrangler.cloud.json`。支持 `--output deploy/wrangler.cloud.json`，父目录须已存在；入口与迁移目录相对输出文件计算，构建仍从执行命令的项目根运行。CLI 不部署 Worker、不执行迁移、不配置 Secrets、Access、Route 或 DNS。
 
-每次完整读取 D1/KV 分页和 R2 cursor 分页后精确匹配配置名；同名重复时报错。已有 D1/KV ID 与桶名会复用；只检查目标 R2 桶的 `r2.dev` 和自定义域名设置，任何公开入口启用或状态未知都会停止。不会读取其他桶的对象，也不会关闭已有桶公开入口、清空 KV、重建 D1、删除资源或改写对象。
+每次完整读取 D1/KV 分页和 R2 cursor 分页后精确匹配配置名；同名重复时报错。已有 D1/KV ID 与桶名会复用；新 R2 桶显式指定 Standard。复用或新建后均读取目标桶属性，只有明确返回 `storage_class: "Standard"` 才继续；InfrequentAccess 或缺少该字段时停止，不修改已有存储类型。另检查目标 R2 桶的 `r2.dev` 和自定义域名设置，任何公开入口启用或状态未知都会停止。不会读取其他桶的对象，也不会关闭已有桶公开入口、清空 KV、重建 D1、删除资源或改写对象。
 
 已有输出的账户、Worker、D1/KV ID、R2 名和 AE dataset 必须与本次匹配一致。资源被外部删除或替换时拒绝重建／覆盖；输出含未知字段或嵌套自定义配置时也拒绝覆盖。输出是生成文件；长期普通配置修改写回输入 JSON。不要以删除输出配置绕过 ID 冲突，应先核对资源归属。
 
@@ -131,4 +131,6 @@ npx wrangler deploy --config wrangler.cloud.json
 
 当前生产 Zone 的 Free Website 请求体上限为 100 MB，包含 multipart 开销；Workers Paid 不提高该上限。原型云端 32 MiB、本地 workerd 160 MiB 是不同证据，后者不能证明当前域名能接收 160 MiB。容量配置省略也不会绕过平台限制。见 [Workers 请求限制](https://developers.cloudflare.com/workers/platform/limits/#request-and-response-limits)。
 
-CLI API 契约依据：[D1 数据库 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/)、[KV namespace API](https://developers.cloudflare.com/api/resources/kv/subresources/namespaces/)、[R2 桶列表及 cursor](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/list/)、[R2 managed domain](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/managed/methods/list/)、[R2 custom domains](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/custom/methods/list/)。
+2026-10-11 的真实只读计划预检中，D1 列表读取成功，KV namespace 列表返回 HTTP 401、错误码 10000，因此在任何创建前停止。当前凭据尚需补齐目标账户 Workers KV Storage 权限后重试；这属于权限配置与云端验证缺口，不是已完成真实初始化的证据。本次未产生云端写入。
+
+CLI API 契约依据：[D1 数据库 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/)、[KV namespace API](https://developers.cloudflare.com/api/resources/kv/subresources/namespaces/)、[R2 桶列表及 cursor](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/list/)、[R2 桶属性和 storage_class](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/get/)、[R2 managed domain](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/managed/methods/list/)、[R2 custom domains](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/custom/methods/list/)。

@@ -24,13 +24,14 @@ function cloud() {
     const u = new URL(url);
     const route = u.pathname.split(`/accounts/${account}/`)[1];
     const method = options.method;
-    requests.push({ route, method, query: Object.fromEntries(u.searchParams) });
+    requests.push({ route, method, body: options.body ? JSON.parse(options.body) : undefined, query: Object.fromEntries(u.searchParams) });
     const kind = route.startsWith('d1/') ? 'd1' : route.startsWith('storage/') ? 'kv' : 'r2';
+    if (method === 'GET' && /^r2\/buckets\/[^/]+$/.test(route)) return Response.json({ success: true, result: data.r2.find(item => item.name === route.split('/')[2]) });
     if (route.endsWith('/domains/managed')) return Response.json({ success: true, result: { enabled: false } });
     if (route.endsWith('/domains/custom')) return Response.json({ success: true, result: { domains: [] } });
     if (method === 'POST') {
       const body = JSON.parse(options.body);
-      const item = kind === 'd1' ? { name: body.name, uuid: dbId } : kind === 'kv' ? { title: body.title, id: kvId } : { name: body.name };
+      const item = kind === 'd1' ? { name: body.name, uuid: dbId } : kind === 'kv' ? { title: body.title, id: kvId } : { name: body.name, storage_class: body.storage_class };
       data[kind].push(item);
       if (failCreate === kind) { failCreate = undefined; throw new Error(`network ${token} other-body-password`); }
       return Response.json({ success: true, result: item });
@@ -113,6 +114,7 @@ test('all pages are searched and exact names win over prefix matches', async t =
     assert.equal(options.method, 'GET');
     const u = new URL(url);
     seen.push(u);
+    if (u.pathname.endsWith('/r2/buckets/share-test')) return Response.json({ success: true, result: { name: 'share-test', storage_class: 'Standard' } });
     if (u.pathname.endsWith('/managed')) return Response.json({ success: true, result: { enabled: false } });
     if (u.pathname.endsWith('/custom')) return Response.json({ success: true, result: { domains: [] } });
     if (u.pathname.endsWith('/r2/buckets')) return Response.json({ success: true, result: { buckets: [{ name: u.searchParams.has('cursor') ? 'share-test' : 'share-test-extra' }] }, result_info: u.searchParams.has('cursor') ? {} : { cursor: 'next-page' } });
@@ -174,7 +176,7 @@ test('existing resource IDs cannot be replaced, even if the resource disappeared
 
 test('private R2 check refuses public buckets before creating other resources', async t => {
   const f = await fixture(t);
-  f.api.data.r2.push({ name: 'share-test' });
+  f.api.data.r2.push({ name: 'share-test', storage_class: 'Standard' });
   for (const exposed of ['managed', 'custom']) {
     await assert.rejects(f.run({ apply: true, fetch: async (url, options) => {
       if (url.endsWith(`/domains/${exposed}`)) return Response.json({ success: true, result: exposed === 'managed' ? { enabled: true } : { domains: [{ enabled: true }] } });
@@ -248,4 +250,23 @@ test('output locks and symlinks cannot overwrite user files', async t => {
   await assert.rejects(f.run({ apply: true }), /无法安全读取/);
   assert.equal(await readFile(f.input, 'utf8'), before);
   assert.equal(f.api.requests.length, 0);
+});
+
+
+test('new R2 buckets explicitly use Standard storage', async t => {
+  const f = await fixture(t);
+  await f.run({ apply: true });
+  assert.deepEqual(f.api.requests.find(item => item.route === 'r2/buckets' && item.method === 'POST').body,
+    { name: 'share-test', storage_class: 'Standard' });
+  assert.ok(f.api.requests.some(item => item.route === 'r2/buckets/share-test' && item.method === 'GET'));
+});
+
+test('existing InfrequentAccess and unknown R2 storage classes fail before any creation', async t => {
+  for (const storage_class of ['InfrequentAccess', undefined]) {
+    const f = await fixture(t);
+    f.api.data.r2.push({ name: 'share-test', storage_class });
+    await assert.rejects(f.run({ apply: true }), /Standard/);
+    assert.ok(f.api.requests.every(item => item.method === 'GET'));
+    assert.deepEqual(await readdir(f.root), ['deployment.local.json']);
+  }
 });

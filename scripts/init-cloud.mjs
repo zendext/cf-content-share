@@ -156,21 +156,23 @@ export async function initialize({ configFile, outputFile, apply = false, token,
       resources.push({ kind, name: config.names[kind], id, action: matches.length ? 'reuse' : 'create', route });
     }
     assertExisting(previous, config, resources);
-    const checkPrivate = async () => {
+    const checkBucket = async () => {
+      const bucket = await api(`r2/buckets/${config.names.r2}`);
+      if (bucket.result?.name !== config.names.r2 || bucket.result?.storage_class !== 'Standard') throw new Error('目标 R2 桶未确认使用 Standard 存储类型；拒绝复用 InfrequentAccess 或未知类型，不会修改已有桶设置。');
       const route = `r2/buckets/${config.names.r2}/domains`;
       const managed = await api(`${route}/managed`);
       const custom = await api(`${route}/custom`);
       if (managed.result?.enabled !== false || !Array.isArray(custom.result?.domains) || custom.result.domains.some(domain => domain.enabled !== false)) throw new Error('目标 R2 桶未确认私有：r2.dev 或自定义域名已启用/状态未知。请核对目标桶；初始化不会修改公开设置。');
     };
-    if (resources[2].id) await checkPrivate();
+    if (resources[2].id) await checkBucket();
     if (!apply) return { mode: 'plan', resources, analytics: { dataset: config.names.analytics, action: 'created-on-first-write' } };
     for (const resource of resources) {
       if (resource.id) continue;
-      const payload = await api(resource.route, 'POST', resource.kind === 'kv' ? { title: resource.name } : { name: resource.name });
+      const payload = await api(resource.route, 'POST', resource.kind === 'kv' ? { title: resource.name } : { name: resource.name, ...(resource.kind === 'r2' ? { storage_class: 'Standard' } : {}) });
       resource.id = payload.result?.[resource.kind === 'd1' ? 'uuid' : resource.kind === 'kv' ? 'id' : 'name'];
       if (!(resource.kind === 'd1' ? databaseId : resource.kind === 'kv' ? hexId : namePattern).test(resource.id ?? '') || payload.result?.[resource.kind === 'kv' ? 'title' : 'name'] !== resource.name) throw new Error(`${resource.kind} 创建响应缺少有效标识；结果未知，重新运行只读计划核对。`);
     }
-    if (resources[2].action === 'create') await checkPrivate();
+    if (resources[2].action === 'create') await checkBucket();
     const relative = target => path.relative(path.dirname(output), path.join(root, target)).split(path.sep).join('/') || '.';
     const vars = { PUBLIC_ORIGIN: config.public_origin, ACCESS_ISSUER: config.access_issuer, ACCESS_AUD: config.access_aud, CLOUDFLARE_ACCOUNT_ID: config.account_id, ANALYTICS_DATASET: config.names.analytics, DEFAULT_TIMEZONE: config.timezone };
     if (config.max_file_bytes !== undefined) vars.MAX_FILE_BYTES = config.max_file_bytes;

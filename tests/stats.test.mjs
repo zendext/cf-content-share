@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign, randomUUID } from 'node:crypto';
+import { generateKeyPairSync, sign, randomUUID, createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -42,7 +42,7 @@ before(async () => {
     ],
     compatibilityDate: '2026-10-11',
     bindings: { PUBLIC_ORIGIN: origin, ACCESS_ISSUER: issuer, ACCESS_AUD: 'compat-aud', ANALYTICS_DATASET:'access_events', CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32), ANALYTICS_API_TOKEN:'secret-must-not-leak', DEFAULT_TIMEZONE:'Asia/Shanghai' },
-    d1Databases: ['DB'], kvNamespaces: ['MAPPINGS'],
+    d1Databases: ['DB'], kvNamespaces: ['MAPPINGS'], r2Buckets: ['FILES'],
     outboundService: async req => {
       if(req.url.includes('/analytics_engine/sql')) { sqlQueries.push(await req.text()); assert.equal(req.headers.get('authorization'),'Bearer secret-must-not-leak'); return new Response(malformed ? 'oops secret-must-not-leak' : JSON.stringify(providerError ? {error:{code:'secret-must-not-leak',message:'secret-must-not-leak'}} : {data:sqlRows}), {status:sqlStatus}); }
       assert.equal(req.url, issuer + '/cdn-cgi/access/certs');
@@ -188,4 +188,109 @@ test('D1 metadata failure is reported without discarding weighted historical res
   assert.equal(result.items[0].visits,31);assert.equal(result.items[0].resource.state,'unknown');
   assert.deepEqual(result.diagnostics,['RESOURCE_METADATA_UNAVAILABLE']);assert.equal(result.completeness,'unknown');
  } finally {await db.exec('ALTER TABLE resources_unavailable RENAME TO resources');}
+});
+
+
+async function uploadFile(bytes, changes = {}) {
+ const {token} = await call('session.create');
+ const metadata = {operation_id:randomUUID(),filename:'stats.bin',content_type:'application/octet-stream',size_bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),...changes};
+ const boundary = 'stats-upload-boundary';
+ const body = Buffer.concat([
+  Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="metadata"\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="stats.bin"\r\n\r\n`),
+  bytes,Buffer.from(`\r\n--${boundary}--\r\n`),
+ ]);
+ const response = await request('/upload',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':`multipart/form-data; boundary=${boundary}`},body});
+ assert.equal(response.status,201,await response.clone().text());
+ return (await response.json()).resource;
+}
+const points = async () => (await request('/test-points')).json();
+const waitForCache = async path => {
+ assert.equal((await request('/test-cache-wait?url='+encodeURIComponent(origin+path))).status,200);
+};
+
+test('file R2/cache GET, range, retries, bots and preview each submit once; HEAD and errors never submit', {timeout:15000}, async()=>{
+ const bytes = Buffer.from('0123456789'), resource = await uploadFile(bytes), path = '/r/'+resource.id;
+ await request('/test-points',{method:'DELETE'});
+ const before = (await (await request('/test-r2')).json()).reads;
+ const first = await request(path,{headers:{referer:'https://docs.test/download?version=1'}});
+ assert.equal(first.status,200);assert.deepEqual(Buffer.from(await first.arrayBuffer()),bytes);
+ assert.equal((await (await request('/test-r2')).json()).reads,before+1);
+ await waitForCache(path);
+ await request('/test-r2?fail=1');
+ try {
+  // The cached response still succeeds while any R2 get would throw.
+  for (const headers of [{},{'user-agent':'StatsBot'},{purpose:'prefetch'}]) {
+   const cached = await request(path,{headers});assert.equal(cached.status,200);
+   assert.deepEqual(Buffer.from(await cached.arrayBuffer()),bytes);
+  }
+  assert.equal((await (await request('/test-r2')).json()).reads,before+1);
+  const rejected = await request(path,{headers:{range:'bytes=2-4'}});
+  assert.equal(rejected.status,503);await rejected.text();
+ } finally {await request('/test-r2?fail=0');}
+ for (let i=0;i<2;i++) {
+  const range = await request(path,{headers:{range:'bytes=2-4'}});
+  assert.equal(range.status,206);assert.equal(await range.text(),'234');
+ }
+ const head = await request(path,{method:'HEAD'});assert.equal(head.status,200);assert.equal(await head.text(),'');
+ const invalid = await request(path,{headers:{range:'bytes=99-'}});assert.equal(invalid.status,416);await invalid.text();
+ const missing = await request('/r/NoSuchFile000');assert.equal(missing.status,404);await missing.text();
+ const events = await points();assert.equal(events.length,6);
+ assert.deepEqual(events.map(event=>event.doubles[1]),[200,200,200,200,206,206]);
+ assert.equal(new Set(events.map(event=>event.blobs[0])).size,6);
+ for(const event of events){assert.equal(event.blobs[1],resource.id);assert.equal(event.blobs[2],'file');}
+ assert.equal(events[0].blobs[3],'https://docs.test/download?version=1');
+});
+
+test('raw SVG cache and successful stale deletion propagation retain served image kind; tombstone blocks cached bytes without an event', {timeout:15000}, async()=>{
+ const bytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>const original=1</script></svg>');
+ const resource = await uploadFile(bytes,{filename:'raw.svg',content_type:'image/svg+xml'}), path='/r/'+resource.id;
+ await request('/test-points',{method:'DELETE'});
+ const shown=await request(path);assert.equal(shown.status,200);assert.equal(shown.headers.get('content-type'),'image/svg+xml');
+ assert.match(shown.headers.get('content-disposition'),/^inline/);assert.deepEqual(Buffer.from(await shown.arrayBuffer()),bytes);
+ await waitForCache(path);
+ const oldMapping = await kv.get(resource.id);
+ await request('/test-cache-delete?fail=1');
+ try {
+  const deleted = await call('resource.delete',{resource_id:resource.id});assert.equal(deleted.resource.state,'deleted');
+ } finally {await request('/test-cache-delete?fail=0');}
+ const tombstone = await kv.get(resource.id);
+ assert.equal(JSON.parse(tombstone).state,'deleted');
+ await kv.put(resource.id,oldMapping);
+ await request('/test-r2?fail=1');
+ try {
+  const before=(await(await request('/test-r2')).json()).reads;
+  // An unavailable resource table also proves collection uses the served mapping kind.
+  await db.exec('ALTER TABLE resources RENAME TO resources_unavailable');
+  try {
+   const stale=await request(path);assert.equal(stale.status,200);assert.deepEqual(Buffer.from(await stale.arrayBuffer()),bytes);
+  } finally {await db.exec('ALTER TABLE resources_unavailable RENAME TO resources');}
+  assert.equal((await(await request('/test-r2')).json()).reads,before);
+  const served=await points();assert.equal(served.length,2);
+  for(const event of served){assert.equal(event.blobs[1],resource.id);assert.equal(event.blobs[2],'image');assert.equal(event.doubles[1],200);}
+  await kv.put(resource.id,tombstone);
+  const rejected=await request(path);assert.equal(rejected.status,404);await rejected.text();
+  assert.equal((await points()).length,2);
+  assert.equal((await(await request('/test-r2')).json()).reads,before);
+ } finally {await request('/test-r2?fail=0');await kv.put(resource.id,tombstone);}
+});
+
+test('file collector failure preserves full and range response bytes',async()=>{
+ const bytes=Buffer.from('collector failure file'),resource=await uploadFile(bytes),path='/r/'+resource.id;
+ await request('/test-points',{method:'DELETE'});await request('/test-fail?value=1');
+ try {
+  const full=await request(path);assert.equal(full.status,200);assert.deepEqual(Buffer.from(await full.arrayBuffer()),bytes);
+  const part=await request(path,{headers:{range:'bytes=0-8'}});assert.equal(part.status,206);assert.equal(await part.text(),'collector');
+  assert.equal((await points()).length,0);
+ } finally {await request('/test-fail?value=0');}
+ const logs=await(await request('/test-logs')).json();assert.ok(logs.some(value=>value.includes('ANALYTICS_COLLECTION_FAILED')));
+ assert.ok(!JSON.stringify(logs).includes('secret-must-not-leak'));
+});
+
+test('conditional file request currently returns and counts 200; no reachable 304 response is claimed',async()=>{
+ const bytes=Buffer.from('conditional bytes'),resource=await uploadFile(bytes),path='/r/'+resource.id;
+ await request('/test-points',{method:'DELETE'});
+ const response=await request(path,{headers:{'if-none-match':'*','if-modified-since':'Wed, 01 Jan 2031 00:00:00 GMT'}});
+ assert.equal(response.status,200);assert.equal(response.headers.get('etag'),null);
+ assert.deepEqual(Buffer.from(await response.arrayBuffer()),bytes);
+ const events=await points();assert.equal(events.length,1);assert.equal(events[0].doubles[1],200);
 });

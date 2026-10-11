@@ -8,6 +8,8 @@
 
 原型已部署到 `share.example.com`。Codex 已完成真实 Managed OAuth 登录，Desktop 当前聊天已验证工具调用、上传会话、32 MiB 云端流式上传及匿名下载摘要校验；上传会话撤销生效。OAuth 自动刷新、Hermes 与云端中断恢复仍待验证。域名当前为 Free Website 套餐，平台单请求体上限为 100 MB，Workers Paid 不提高这一限制。
 
+当前入口采用 Worker Route＋灰云 CNAME 到 `edge.example.net`，切换后已重新验证 OAuth、MCP 和固定优选 IP 的上传回读；DNS 记录独立于 Wrangler 的 Route 配置维护。
+
 - [产品需求](docs/requirements/product.md)：产品范围、资源模型、统计与删除规则及验收标准。
 - [技术设计](docs/design/technical.md)：组件职责、认证、MCP 接口、上传、缓存、失败恢复、部署与验证安排。
 - [兼容性原型](prototypes/compat/README.md)：构建、测试、原型边界与云端配置缺项。

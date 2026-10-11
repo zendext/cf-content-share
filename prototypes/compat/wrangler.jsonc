@@ -5,7 +5,7 @@
   "compatibility_date": "2026-10-11",
   "workers_dev": false,
   "preview_urls": false,
-  "routes": [{ "pattern": "share.example.com", "custom_domain": true }],
+  "routes": [{ "pattern": "share.example.com/*", "zone_name": "example.com" }],
   "build": { "command": "npm run build" },
   "vars": {
     "PUBLIC_ORIGIN": "https://share.example.com",

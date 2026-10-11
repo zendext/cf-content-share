@@ -209,6 +209,45 @@ Cloudflare API 回读 `share.example.com` 为 Custom Domain 管理的 proxied AA
 
 提交前再次运行 `PATH="$HOME/.cargo/bin:$PATH" npm run check`，格式、Wasm Clippy、release 构建及 10 组集成测试通过，退出码 0、失败 0。该次本地 160 MiB 上传报告 44415 个 chunk、最大 chunk 4096 字节、Wasm 线性内存 1,310,720 字节。构建输出及本地测试状态由 `.gitignore` 排除，不进入提交。
 
+### Worker Route＋灰云 CNAME 实际切换验证
+
+2026-10-11，用户授权实际切换，关键链路失败时恢复原配置。先将 Custom Domain、DNS、Routes、Access 应用及本地 Wrangler 配置快照保存到忽略目录 `prototypes/compat/.wrangler/route-trial/`，该目录权限 0700，JSON 快照权限 0600；快照包含准入信息，不进入 Git。切换前 Desktop MCP echo 成功，原 Zone 没有 Worker Route。
+
+第一次尝试中，删除 Custom Domain 的 API 成功返回空响应，控制脚本按 JSON 解析导致异常。脚本立即重建原 Custom Domain 并删除临时 Route；恢复后固定优选 IP 的探针返回 200。此失败属于控制脚本响应处理，并非灰云方案失效。修正空成功响应处理后重新执行，得到以下配置：
+
+| 项目 | 切换后状态 |
+| --- | --- |
+| Custom Domain | 已移除，`workers/domains` 中不再存在 share.example.com |
+| Worker Route | `share.example.com/*` → `cf-content-share-compat`；ID `00000000000000000000000000000000`；request_limit_fail_open=false |
+| DNS | CNAME `share.example.com` → `edge.example.net`，proxied=false，TTL 60；ID `00000000000000000000000000000000` |
+| 优选入口 | 本次 cf-entry A 记录为 `192.0.2.1`，不将其写死在部署配置 |
+| Access | 应用 domain、aud、策略、IdP 和 OAuth 配置与切换前快照逐项相等 |
+| Worker | 代码版本未变；workers.dev 和预览入口保持关闭 |
+
+Cloudflare 和 Google 的 HTTPS DNS 查询均返回 `share.example.com CNAME edge.example.net` 及目标 A 记录。本机普通 DNS 在切换后仍返回旧 Anycast 地址及递减 TTL，因此固定 IP 的请求采用 curl `--resolve` 或 undici Agent 的 lookup，保留原 Host、TLS SNI 和证书校验，避免将旧 DNS 缓存误认为优选链路证据。
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 优选 IP：匿名探针 | 200 |
+| 优选 IP：无 Token MCP | Access 401，含正确 OAuth resource_metadata challenge |
+| 优选 IP：OAuth 资源发现 | 200，resource 与团队地址正确 |
+| 优选 IP：无 Token 上传 | Worker 401，未误进入 OAuth 页面 |
+| 切换后重新执行 `codex mcp login cf-content-share-compat` | 新的 OAuth 授权及本机回调成功，CLI 输出 Successfully logged in |
+| 新起 Codex app-server 进程，读取刚保存的 OAuth 凭据 | `mcpServerStatus/list` 返回 authStatus=oAuth，发现 describe/invoke 两个工具，无 error；未导出客户端 OAuth 凭据 |
+| 当前 Desktop MCP | echo、session.create、operation.get、session.revoke 均成功 |
+| 优选 IP：同一应用 Token 两次上传 | 59 字节及 32 MiB 均返回 201/stored；固定 IP 匿名下载大小和 SHA-256 均一致 |
+| 优选 IP：重试与冲突 | 相同操作返回 200/原 resource_id；不同 filename 返回 409 |
+| 优选 IP：错误摘要 | 422；Desktop 查询上传状态为 failed |
+| 优选 IP：撤销应用会话后再次上传 | 401/UNAUTHORIZED |
+
+32 MiB 上传报告 8195 个 file chunk、最大 chunk 5774 字节、Wasm 线性内存 1,310,720 字节。SHA-256 为 `edeadec8f638055689d5be63b4bcf2654fb64bf91fb6651e9a924f052a9c7db0`。测试程序 `route-trial/check.mjs` 及非敏感结果 `results.json` 保存在本地忽略目录，退出码 0，全部断言通过。应用 Token 已撤销，0600 临时 Token 文件已删除。32 MiB R2 对象及精确匹配的 D1 记录已清理；保留 59 字节样例及失败记录。新样例 resource_id 为 `example-resource-id`。
+
+最终本机 DNS 缓存刷新后，`dns.lookup` 返回 `192.0.2.1`；未固定 IP 的 Node fetch 探针与小样例下载均为 200，已清理大文件及摘要失败资源为 404。此后再启动一个全新 Codex app-server 进程，使用正常系统 DNS 和刚登录保存的凭据，认证工具发现再次通过。云端 API 最终回读确认 CNAME/Route 正确、Custom Domain 不存在、workers.dev/preview 设置与原快照一致。上述验证退出码均为 0。
+
+结论：该账户当前的 Worker Route＋灰云 CNAME 组合通过本轮 OAuth、MCP 和云端上传检查，保留切换后的配置。Wrangler 已改为 Route 格式，DNS CNAME 独立维护；`wrangler deploy --dry-run` 构建通过，包大小 729.68 KiB、gzip 273.36 KiB，退出码 0；配置解析、文档链接和 diff 检查通过。此前“必须只在客户端优选”的建议过于保守，不能用官方文档的推荐配置代替实际互操作结果。官方 Route 文档仍要求 proxied DNS，因此这里只承诺本轮实测结果，不推断平台长期兼容性、证书续期或其他账户行为。OAuth 自动刷新、撤销以及 Hermes 仍未在本轮验证。
+
+回滚顺序：删除这条实验 CNAME，通过 `PUT /accounts/<account>/workers/domains` 重新绑定 `share.example.com` 到当前 Worker（enabled=true、previews_enabled=false），确认平台生成 proxied AAAA `100::`，再删除实验 Route，并将 Wrangler routes 恢复为 `{"pattern":"share.example.com","custom_domain":true}`。复测匿名探针、Access 未授权挑战及已登录 MCP。现有本地 `route-trial/control.py restore` 可恢复云端；本地配置原件为 `wrangler.before.jsonc`。不要将快照整体上传仓库。
+
 ## 限制与结论
 
 本地证据支持继续采用 Rust/Wasm：官方 SDK 可以通过这个适配层调用工具，Web Crypto 的 RS256 验签可执行，multer 与 R2 固定长度流、原生校验可以组成有界内存上传链路。

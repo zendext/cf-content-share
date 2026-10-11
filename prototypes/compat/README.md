@@ -69,7 +69,7 @@ Worker 只接受 `Cf-Access-Jwt-Assertion`，校验 RS256、签名、issuer、au
 | Access 应用 | `00000000-0000-0000-0000-000000000001`，仅保护 `share.example.com/mcp`，启用 Managed OAuth |
 | OAuth | 支持 localhost/127.0.0.1 动态客户端注册；Access Token 15 分钟、授权会话 24 小时 |
 | Worker | `cf-content-share-compat`，版本 `00000000-0000-0000-0000-000000000001` |
-| 域名配置 | `https://share.example.com` 已绑定；workers.dev 和预览 URL 关闭 |
+| 域名配置 | Route `share.example.com/*` → 当前 Worker；灰云 CNAME `share.example.com` → `edge.example.net`；workers.dev 和预览 URL 关闭 |
 
 新客户端的接入步骤（本机 Codex 已完成）：
 
@@ -81,6 +81,8 @@ Worker 只接受 `Cf-Access-Jwt-Assertion`，校验 RS256、签名、issuer、au
 团队和身份提供方无需再次手动创建。API 创建组织返回 201，应用创建、策略回读和部署均成功，本次流程没有要求手动选择套餐或填写付款信息。客户端登录结果须单独验证。
 
 本机使用 `codex mcp add cf-content-share-compat --url https://share.example.com/mcp` 写入共用配置并完成 OAuth，CLI 版本为 0.162.1。Desktop 重启该 MCP 服务后，当前聊天直接调用 `describe`、`invoke` 成功。通过 MCP 创建的同一上传 Token 完成 59 字节和 32 MiB 云端上传，匿名回读的大小和 SHA-256 均一致；32 MiB 上传报告 Wasm 线性内存 1,310,720 字节。重复操作返回原资源，冲突返回 409，错误摘要返回 422 且资源不可公开读取；通过 MCP 撤销会话后，旧 Token 返回 401。只保存应用 Token 到权限 0600 的临时文件，未提取 Codex 私有 OAuth 凭据；测试后已撤销并移除该临时 Token。
+
+域名随后已从 Custom Domain 切换为 Worker Route＋灰云 CNAME 优选入口。切换后重新完成 Codex OAuth 登录、新客户端认证工具发现和 Desktop 调用；固定连接优选 IP `192.0.2.1` 的 59 字节／32 MiB 上传及回读、摘要拒绝、应用会话撤销均通过。公网 DoH 已确认 CNAME 及目标 A 记录。该 IP 只是本次解析结果，不写死到部署配置；访问 URL、Host、TLS SNI 保持 `share.example.com`。Wrangler 只管理 Route，DNS CNAME 需单独保留为 `proxied=false`；不要重新添加同名 Custom Domain 覆盖此接入方式。官方 Route 文档仍要求 proxied DNS，本方案属于当前账户实测可用的组合，后续平台变更或重新部署须复核。完整操作及回滚说明见实验记录。
 
 已验证：Node fetch 访问 `/r/probe` 为 200，未认证 `/mcp` 为 Access 401，无应用 Token 的 `/upload` 为 Worker 401。OAuth 发现应沿 401 的 `WWW-Authenticate.resource_metadata` 地址继续：实际为 `/.well-known/cloudflare-access-protected-resource/mcp`，该路径与团队的授权服务器元数据均返回 200。不要假定服务提供 `/.well-known/oauth-protected-resource/mcp`，此路径实测为 404。
 

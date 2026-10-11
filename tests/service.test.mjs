@@ -124,7 +124,7 @@ test('Access assertion verification, origin checks and MCP protocol boundaries',
 test('two tools discover strict operation schemas, results, side effects and valid examples', async () => {
   assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ['describe', 'invoke']);
   const catalog = await client.callTool({ name: 'describe', arguments: {} });
-  assert.equal(catalog.structuredContent.operations.length, 12);
+  assert.equal(catalog.structuredContent.operations.length, 14);
   const invalidDescribe = await client.callTool({ name: 'describe', arguments: { operation: null } });
   assert.equal(invalidDescribe.isError, true);
   for (const op of catalog.structuredContent.operations) {

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "worker-build --release",
-    "test": "npm run build && node --test tests/service.test.mjs tests/r2-fencing.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "dev": "wrangler dev --config wrangler.local.jsonc",
     "check": "cargo fmt --check && cargo clippy --target wasm32-unknown-unknown -- -D warnings && npm test",
     "db:migrate:local": "wrangler d1 migrations apply DB --local --config wrangler.local.jsonc",

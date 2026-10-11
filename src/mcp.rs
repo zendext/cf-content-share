@@ -1,4 +1,4 @@
-use crate::{auth, catalog, error, json_response, recovery, resources, sessions, store};
+use crate::{auth, catalog, error, json_response, recovery, resources, sessions, stats, store};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -100,7 +100,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                     Ok(_) if explicitly_null => tool_error("INVALID_ARGUMENTS"),
                     Err(_) => tool_error("INVALID_ARGUMENTS"),
                     Ok(Describe { operation: None }) => tool_result(
-                        json!({"operations":catalog::definitions().iter().map(|op| json!({"name":op.name,"description":op.description})).collect::<Vec<_>>(),"defaults":{"resource_id_length":12,"list_limit":20,"list_max_limit":100,"mapping_freshness_seconds":60,"time_format":"UTC Unix seconds","automatic_retry_limit":10,"upload_session_seconds":86400},"implementation":"url-and-file-resources; analytics pending"}),
+                        json!({"operations":catalog::definitions().iter().map(|op| json!({"name":op.name,"description":op.description})).collect::<Vec<_>>(),"defaults":{"resource_id_length":12,"list_limit":20,"list_max_limit":100,"mapping_freshness_seconds":60,"time_format":"UTC Unix seconds","automatic_retry_limit":10,"upload_session_seconds":86400},"implementation":"url-and-file-resources, analytics, durable-recovery"}),
                         false,
                     ),
                     Ok(Describe {
@@ -147,6 +147,8 @@ async fn invoke(input: &Value, env: &Env) -> Result<Value> {
     use catalog::Action;
     let a = &args.arguments;
     let result = match definition.operation {
+        Action::StatsQuery => stats::query(env, a, false).await,
+        Action::StatsSamples => stats::query(env, a, true).await,
         Action::CreateSession => sessions::create(env, a).await,
         Action::ListSessions => sessions::list(env, a).await,
         Action::RevokeSession => sessions::revoke(env, a["session_id"].as_str().unwrap()).await,

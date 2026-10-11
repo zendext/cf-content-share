@@ -5,6 +5,7 @@ mod public;
 mod recovery;
 mod resources;
 mod sessions;
+mod stats;
 mod store;
 mod upload;
 
@@ -27,12 +28,15 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         (Method::Post, "/upload") => upload::handle(&mut req, &env).await,
         (_, "/mcp") => mcp::handle(&mut req, &env).await,
         (Method::Get | Method::Head, path) if path.starts_with("/r/") => {
-            public::read(&req, &path[3..], &env, &ctx)
-                .await
-                .map(|read| {
-                    let _ = read.kind;
-                    read.response
-                })
+            match public::read(&req, &path[3..], &env, &ctx).await {
+                Ok(read) => {
+                    if let Some(kind) = read.kind {
+                        stats::collect(&req, &env, &path[3..], &kind, read.response.status_code());
+                    }
+                    Ok(read.response)
+                }
+                Err(error) => Err(error),
+            }
         }
         _ => error("NOT_FOUND", 404),
     };

@@ -2,6 +2,8 @@ use serde_json::{Value, json};
 
 #[derive(Clone, Copy)]
 pub enum Action {
+    StatsQuery,
+    StatsSamples,
     CreateUrl,
     ListResources,
     GetResource,
@@ -47,9 +49,43 @@ fn page(mut properties: Value) -> Value {
     schema(properties, &[])
 }
 
+fn stats_schema(samples: bool) -> Value {
+    let mut properties = json!({"start":{"type":"integer","minimum":0,"maximum":9007199254740991u64},"end":{"type":"integer","minimum":0,"maximum":9007199254740991u64},"timezone":{"type":"string","minLength":1,"maxLength":128},"resource_id":resource_id(),"kind":{"type":"string","enum":["url","image","file"]},"limit":{"type":"integer","minimum":1,"maximum":100,"default":20}});
+    if samples {
+        for key in ["referer", "country", "region", "city"] {
+            properties[key] = string(16384);
+        }
+        properties["cursor"] = json!({"type":"string","minLength":1,"maxLength":2048});
+        schema(properties, &["start", "end"])
+    } else {
+        properties["view"] =
+            json!({"type":"string","enum":["summary","trend","referrers","regions","top"]});
+        properties["granularity"] = json!({"type":"string","enum":["hour","day"],"default":"day"});
+        schema(properties, &["start", "end", "view"])
+    }
+}
+
 // Discovery, input validation and dispatch use this one catalog.
 pub fn definitions() -> Vec<Definition> {
     vec![
+        Definition {
+            operation: Action::StatsQuery,
+            name: "stats.query",
+            description: "查询加权访问汇总、趋势、来源、地区和热门资源",
+            schema: stats_schema(false),
+            result: "items 与实际 start/end/timezone/granularity；加权估算，采集完整性未知",
+            side_effects: "只读 Analytics Engine，D1 补充资源状态",
+            example: json!({"view":"summary","start":1791676800,"end":1791763200}),
+        },
+        Definition {
+            operation: Action::StatsSamples,
+            name: "stats.samples",
+            description: "分页查询平台可获取的访问样本",
+            schema: stats_schema(true),
+            result: "items 保留原始 Referer、地区和 _sample_interval；has_more 不代表全部访问或快照",
+            side_effects: "只读；游标绑定窗口和所有筛选",
+            example: json!({"start":1791676800,"end":1791763200,"limit":20}),
+        },
         Definition {
             operation: Action::CreateSession,
             name: "session.create",

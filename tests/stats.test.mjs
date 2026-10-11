@@ -17,7 +17,7 @@ function jwt(changes = {}, header = {}) {
   return `${data}.${sign('RSA-SHA256', Buffer.from(data), privateKey).toString('base64url')}`;
 }
 let mf, db, kv, client;
-let sqlQueries = [], sqlRows = [], sqlStatus = 200, malformed = false, providerError = false;
+let sqlQueries = [], sqlRows = [], sqlStatus = 200, malformed = false, providerError = false, projectedOrderOnly = false;
 const now = () => Math.floor(Date.now() / 1000);
 const create = (extra = {}) => call('resource.create_url', { operation_id: randomUUID(), target_url: 'https://example.com/', ...extra });
 const errorCall = async (operation, args, code) => {
@@ -44,7 +44,15 @@ before(async () => {
     bindings: { PUBLIC_ORIGIN: origin, ACCESS_ISSUER: issuer, ACCESS_AUD: 'compat-aud', ANALYTICS_DATASET:'access_events', CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32), ANALYTICS_API_TOKEN:'secret-must-not-leak', DEFAULT_TIMEZONE:'Asia/Shanghai' },
     d1Databases: ['DB'], kvNamespaces: ['MAPPINGS'], r2Buckets: ['FILES'],
     outboundService: async req => {
-      if(req.url.includes('/analytics_engine/sql')) { sqlQueries.push(await req.text()); assert.equal(req.headers.get('authorization'),'Bearer secret-must-not-leak'); return new Response(malformed ? 'oops secret-must-not-leak' : JSON.stringify(providerError ? {error:{code:'secret-must-not-leak',message:'secret-must-not-leak'}} : {data:sqlRows}), {status:sqlStatus}); }
+      if(req.url.includes('/analytics_engine/sql')) {
+        const sql = await req.text();
+        sqlQueries.push(sql);
+        if (projectedOrderOnly && /\b(?:blob|double)\d+\b/.test(sql.match(/ORDER BY (.*?) LIMIT/)?.[1] ?? '')) {
+          return new Response('Input was invalid: unable to find type of column', {status:422});
+        }
+        assert.equal(req.headers.get('authorization'),'Bearer secret-must-not-leak');
+        return new Response(malformed ? 'oops secret-must-not-leak' : JSON.stringify(providerError ? {error:{code:'secret-must-not-leak',message:'secret-must-not-leak'}} : {data:sqlRows}), {status:sqlStatus});
+      }
       assert.equal(req.url, issuer + '/cdn-cgi/access/certs');
       return new Response(JSON.stringify({ keys: [jwk] }), { headers: { 'content-type': 'application/json' } });
     },
@@ -144,7 +152,7 @@ test('samples preserve exact fields and weight, bind cursor filters/window/zone,
  const filters={start,end,referer,country:'CN',region:'Beijing',city:'Beijing',kind:'url',resource_id:resource.id};
  const page=await call('stats.samples',{...filters,limit:1});
  assert.equal(page.items[0]._sample_interval,8);assert.equal(page.items[0].referer,referer);assert.equal(page.has_more,true);assert.ok(page.next_cursor);
- assert.match(sqlQueries.at(-1),/ORDER BY double1 DESC, blob1 DESC LIMIT 2/);
+ assert.match(sqlQueries.at(-1),/ORDER BY time DESC, event_id DESC LIMIT 2/);
  assert.ok(sqlQueries.at(-1).includes(`hex(blob4) = '${Buffer.from(referer).toString('hex').toUpperCase()}'`));
  assert.ok(!sqlQueries.at(-1).includes('OR 1=1'));
  sqlRows=[{...row,event_id:'yyyyyyyyyyyy'}];
@@ -293,4 +301,21 @@ test('conditional file request currently returns and counts 200; no reachable 30
  assert.equal(response.status,200);assert.equal(response.headers.get('etag'),null);
  assert.deepEqual(Buffer.from(await response.arrayBuffer()),bytes);
  const events=await points();assert.equal(events.length,1);assert.equal(events[0].doubles[1],200);
+});
+
+// Real AE returns 422 for source names in ORDER BY after SELECT renamed them.
+test('AE orders projected columns in every aliased statistics view',async()=>{
+ const end=now(),start=end-60;
+ const {resource}=await create();
+ projectedOrderOnly=true;
+ try {
+  for(const [view,row] of [['referrers',{referer:'https://example.test/',visits:1}],['regions',{country:'US',region:'California',city:'',visits:1}],['top',{resource_id:resource.id,kind:'url',visits:1}]]) {
+   sqlRows=[row];
+   const result=await call('stats.query',{view,start,end});
+   assert.equal(result.items[0].visits,1);
+  }
+  sqlRows=[{event_id:'ABCDEFGHIJKL',resource_id:resource.id,kind:'url',time:end-1,status:302,referer:'',country:'US',region:'',city:'',_sample_interval:1}];
+  const samples=await call('stats.samples',{start,end});
+  assert.equal(samples.items[0].event_id,'ABCDEFGHIJKL');
+ } finally {projectedOrderOnly=false;}
 });

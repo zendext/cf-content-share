@@ -4,11 +4,11 @@
 
 项目面向单人自部署、自用。以自动生成的短 URL 作为分享入口，持有链接即可访问，不提供自建管理 GUI。
 
-首版需求与技术方案已确认。根目录已实现正式 Rust/Wasm 服务：短链与文件管理、流式上传、容量预留、KV／正文缓存、Cron 恢复、访问统计查询和可重复初始化 CLI。代码在本地 workerd 验证，正式 Worker 尚未部署。完整方案采用 Rust/Wasm Worker、D1、KV、R2 和 Analytics Engine。
+首版需求与技术方案已确认。根目录已实现正式 Rust/Wasm 服务：短链与文件管理、流式上传、容量预留、KV／正文缓存、Cron 恢复、访问统计查询和可重复初始化 CLI。正式 Worker 已部署到 `share.example.com`，本地 workerd 和云端验收范围见下方文档。完整方案采用 Rust/Wasm Worker、D1、KV、R2 和 Analytics Engine。
 
-原型已部署到 `share.example.com`。Codex 已完成真实 Managed OAuth 登录，Desktop 当前聊天已验证工具调用、上传会话、32 MiB 云端流式上传及匿名下载摘要校验；上传会话撤销生效。OAuth 自动刷新、Hermes 与云端中断恢复仍待验证。域名当前为 Free Website 套餐，平台单请求体上限为 100 MB，Workers Paid 不提高这一限制。
+正式服务已通过 Desktop MCP 工具调用、Managed OAuth 登录与刷新、32 MiB 流式上传及下载摘要校验；详细结果见[正式服务云端验收](docs/research/2026-10-11-formal-cloud-acceptance.md)。两个原型测试链接通过更具体的 Route 保留，原型 D1/R2 保持独立。域名仍使用灰云 CNAME → `edge.example.net`；当前 Free Website 套餐单请求体上限为 100 MB，Workers Paid 不提高这一限制。
 
-当前入口采用 Worker Route＋灰云 CNAME 到 `edge.example.net`，切换后已重新验证 OAuth、MCP 和固定优选 IP 的上传回读；DNS 记录独立于 Wrangler 的 Route 配置维护。
+当前入口采用 Worker Route＋灰云 CNAME 到 `edge.example.net`，正式服务沿用已验证的优选入口；DNS 记录独立于 Wrangler 的 Route 配置维护。
 
 - [产品需求](docs/requirements/product.md)：产品范围、资源模型、统计与删除规则及验收标准。
 - [技术设计](docs/design/technical.md)：组件职责、认证、MCP 接口、上传、缓存、失败恢复、部署与验证安排。

@@ -217,7 +217,7 @@ pub async fn query(env: &Env, args: &Value, samples: bool) -> Result<Value> {
             format!(
                 "{EVENT} AS event_id, {RESOURCE} AS resource_id, {KIND} AS kind, {TIME} AS time, {STATUS} AS status, {REFERER} AS referer, {COUNTRY} AS country, {REGION} AS region, {CITY} AS city, _sample_interval"
             ),
-            format!("ORDER BY {TIME} DESC, {EVENT} DESC LIMIT {}", limit + 1),
+            format!("ORDER BY time DESC, event_id DESC LIMIT {}", limit + 1),
             limit + 1,
         ),
         "summary" => ("SUM(_sample_interval) AS visits".into(), "".into(), 1),
@@ -231,7 +231,7 @@ pub async fn query(env: &Env, args: &Value, samples: bool) -> Result<Value> {
         ),
         "referrers" => (
             format!("{REFERER} AS referer, SUM(_sample_interval) AS visits"),
-            format!("GROUP BY {REFERER} ORDER BY visits DESC, {REFERER} ASC LIMIT {limit}"),
+            format!("GROUP BY {REFERER} ORDER BY visits DESC, referer ASC LIMIT {limit}"),
             limit,
         ),
         "regions" => (
@@ -239,14 +239,14 @@ pub async fn query(env: &Env, args: &Value, samples: bool) -> Result<Value> {
                 "{COUNTRY} AS country, {REGION} AS region, {CITY} AS city, SUM(_sample_interval) AS visits"
             ),
             format!(
-                "GROUP BY {COUNTRY}, {REGION}, {CITY} ORDER BY visits DESC, {COUNTRY} ASC, {REGION} ASC, {CITY} ASC LIMIT {limit}"
+                "GROUP BY {COUNTRY}, {REGION}, {CITY} ORDER BY visits DESC, country ASC, region ASC, city ASC LIMIT {limit}"
             ),
             limit,
         ),
         "top" => (
             format!("{RESOURCE} AS resource_id, {KIND} AS kind, SUM(_sample_interval) AS visits"),
             format!(
-                "GROUP BY {RESOURCE}, {KIND} ORDER BY visits DESC, {RESOURCE} ASC, {KIND} ASC LIMIT {limit}"
+                "GROUP BY {RESOURCE}, {KIND} ORDER BY visits DESC, resource_id ASC, kind ASC LIMIT {limit}"
             ),
             limit,
         ),

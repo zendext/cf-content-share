@@ -76,7 +76,7 @@ npx wrangler d1 migrations apply DB --remote --config wrangler.cloud.json
 
 根目录迁移按 `migrations/0001_resources.sql` 起的版本顺序执行，后续 `0002_*.sql` 等增量迁移由 Wrangler 的迁移记录去重。已经应用的文件不得改写；重复执行不应重建数据库或改变已有资源 ID、对象 key 和分享 URL。
 
-AE 查询使用单独的 Worker Secret `ANALYTICS_API_TOKEN`。在 API Tokens → Create Custom Token 创建目标账户 **Account → Account Analytics → Read** 的最小权限 Token；限制账户范围，避免使用初始化／部署的写权限 Token。见 [AE SQL API 身份认证](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/)。先用下列只读查询核对权限（账户 ID 从本地配置读取，Secret 文件要求同样为 `0600`）：
+AE 查询使用 Worker Secret `ANALYTICS_API_TOKEN`。建议为新安装使用独立只读 Token；当前部署按用户明确要求复用既有部署 Token，只保存到 Worker Secret，不写入配置或日志。以下是新建只读 Token 的可选步骤。在 API Tokens → Create Custom Token 创建目标账户 **Account → Account Analytics → Read** 的最小权限 Token；限制账户范围，避免使用初始化／部署的写权限 Token。见 [AE SQL API 身份认证](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/)。先用下列只读查询核对权限（账户 ID 从本地配置读取，Secret 文件要求同样为 `0600`）：
 
 ```sh
 node --input-type=module <<'JS'
@@ -97,13 +97,15 @@ npx wrangler deploy --config wrangler.cloud.json
 
 首次 `secret put` 若目标 Worker 不存在，Wrangler 会要求创建占位 Worker；先核对名字，再完成正式 deploy。记录 Worker version ID、Git commit 和迁移列表。`SELECT 1` 通过只证明 SQL 查询身份可用；首次公开访问产生事件之后，还需通过 MCP 统计查询核对 dataset、事件和时区。不要把 Secret 写入 `vars`、输入配置、命令参数或日志。
 
-Route 固定生成为 `{ "pattern": "<host>/*", "zone_name": "<zone>" }`，不使用 `custom_domain`。DNS 独立维护。当前 `share.example.com` 是灰云 CNAME → `edge.example.net`，Route 指向 `cf-content-share-compat`；初始化不得替换、橙云化或删除此 DNS。现有组合是[实验记录](research/2026-10-11-rust-wasm-compatibility.md)中的实测状态；[官方 Route 文档](https://developers.cloudflare.com/workers/configuration/routing/routes/)仍要求 proxied DNS，不能把当前实测推广为平台长期保证。新域名按所选入口方案单独验收。
+Route 固定生成为 `{ "pattern": "<host>/*", "zone_name": "<zone>" }`，不使用 `custom_domain`。DNS 独立维护。当前 `share.example.com` 是灰云 CNAME → `edge.example.net`，主 Route 指向 `cf-content-share`，两个旧测试链接的更具体 Route 指向 `cf-content-share-compat`；初始化不得替换、橙云化或删除此 DNS。现有组合是[实验记录](research/2026-10-11-rust-wasm-compatibility.md)中的实测状态；[官方 Route 文档](https://developers.cloudflare.com/workers/configuration/routing/routes/)仍要求 proxied DNS，不能把当前实测推广为平台长期保证。新域名按所选入口方案单独验收。
 
 ## 5. 原型切换和正式版本升级
 
 **当前原型不是正式模型的升级起点。** 原型 D1/R2 都叫 `cf-content-share-compat`，原型链接使用 43 位 ID；正式模型使用 12 位 ID。不能把正式 Worker 直接绑定原型库，也不能只换 Route 就声称旧链接保留。`public`、`siyuan` 等其他桶与本项目无关。
 
-首次上线先用独立正式资源和独立测试主机演练。保留现有生产 Route、原型数据库和对象，冻结切换前原型写入并导出记录和对象清单。若旧链接必须继续可用，必须先实现、评审和演练显式的旧 43 位路径兼容／映射方案（包含对象 key、元数据、完整性和回滚核对）；当前初始化 CLI 不提供该转换。未完成这一迁移前不切换 `share.example.com/*`。如果明确选择放弃原型测试链接，也需逐项确认保留和删除范围，再安排 Route 切换；不能默认清空原型。正式 v1 之后的版本升级才适用下面的同模型流程。
+2026-10-11 首次切换采用独立正式 D1/KV/R2，并保留原型：先导出原型 D1、回读两个已存储对象及摘要，再为两个完整 43 位 ID 分别配置 `share.example.com/r/<id>*` → `cf-content-share-compat`，最后把 `share.example.com/*` 切换到 `cf-content-share`。尾部 `*` 保留查询参数访问；更具体路径优先，原型仍对完整 ID 验证，其他后缀返回 404。原型配置中的 routes 已同步，后续发布原型不会夺回主 Route。两个旧链接切换后，包括带查询参数访问，均返回原摘要；新资源完全使用正式模型，旧资源不纳入正式资源列表／容量／统计。
+
+这是一份有限旧链接清单，不是通用数据迁移器。原型主 MCP 和上传入口已由正式服务接管，原型库与对象保留；不得将原型迁移套用到正式库。若需回退本次路由切换，先停正式写入，回读当前主 Route ID，再用 Workers Routes API 将其 script 改为 `cf-content-share-compat`；保留两套数据库和对象，不删除正式数据。Wrangler 可能重建 Route ID，不能沿用旧快照中的 ID。正式 v1 之后的版本升级才适用下面的同模型流程。
 
 升级前暂停业务写入及可能改变状态的 Cron，确保没有进行中的上传／恢复任务；记录配置、Git commit、当前 Worker version、D1 migration 列表和 R2 对象清单。用当前正式绑定导出 D1 SQL，输出保存在仓库外：
 
@@ -131,6 +133,13 @@ npx wrangler deploy --config wrangler.cloud.json
 
 当前生产 Zone 的 Free Website 请求体上限为 100 MB，包含 multipart 开销；Workers Paid 不提高该上限。原型云端 32 MiB、本地 workerd 160 MiB 是不同证据，后者不能证明当前域名能接收 160 MiB。容量配置省略也不会绕过平台限制。见 [Workers 请求限制](https://developers.cloudflare.com/workers/platform/limits/#request-and-response-limits)。
 
-2026-10-11 的真实只读计划预检中，D1 列表读取成功，KV namespace 列表返回 HTTP 401、错误码 10000，因此在任何创建前停止。当前凭据尚需补齐目标账户 Workers KV Storage 权限后重试；这属于权限配置与云端验证缺口，不是已完成真实初始化的证据。本次未产生云端写入。
+2026-10-11 用户补齐 KV 权限后，真实初始化与回读已通过：
+
+- D1 `cf-content-share`、KV `cf-content-share-mappings`、R2 `cf-content-share` 已创建；再次执行 `--apply` 全部返回 `reuse`，资源 ID 不变。
+- R2 回读确认 Standard、`r2.dev` 禁用且无自定义域名。正式 D1 应用 `0001_resources.sql`、`0002_files.sql` 后，再次迁移显示无待执行项；初始化时 SQL 回读确认两项迁移、资源数为 0，已发布／预留／清理字节均为 0；后续验收保留删除墓碑与操作历史。
+- `deployment.local.json` 与生成的 `wrangler.cloud.json` 均为 `0600` 且被 Git 忽略；包含实际资源绑定的 `deploy --dry-run` 退出 0。AE binding 的 dataset 为 `cf_content_share`；部署后真实访问已产生事件，五类统计查询和样本分页均已通过云端验收。
+- 现有 Access 应用仍为 `share.example.com/mcp`，audience 与配置一致；主 Route 已切换到 `cf-content-share`，旧测试链接保留独立 Route；灰云 CNAME 仍指向 `edge.example.net`。
+
+最初 KV 读取的 HTTP 401 / 10000 已解除。正式 Worker 已发布，`ANALYTICS_API_TOKEN` 已按用户要求配置；主 Route、两个旧链接 Route、Secret 名称与五分钟 Cron 已通过 API 回读。发布版本、实际验收结果及剩余边界见[正式服务云端验收](research/2026-10-11-formal-cloud-acceptance.md)。
 
 CLI API 契约依据：[D1 数据库 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/)、[KV namespace API](https://developers.cloudflare.com/api/resources/kv/subresources/namespaces/)、[R2 桶列表及 cursor](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/list/)、[R2 桶属性和 storage_class](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/get/)、[R2 managed domain](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/managed/methods/list/)、[R2 custom domains](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/custom/methods/list/)。

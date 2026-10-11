@@ -1,10 +1,10 @@
 # cf-content-share 首版技术设计
 
-- 状态：技术方向与用户可见规则已确认；原型通过本地及 Codex Desktop 云端验证。正式工程已实现短链、文件与容量恢复、统计和资源初始化，已通过 69 项组合回归；正式云端部署与完整环境验收尚未完成。
+- 状态：技术方向与用户可见规则已确认；原型通过本地及 Codex Desktop 云端验证。正式工程已实现短链、文件与容量恢复、统计和资源初始化，已通过 70 项组合回归并部署到 share.example.com；本轮云端验收范围见正式验收记录。
 - 更新日期：2026-10-11。
 - 需求基线：[产品需求](../requirements/product.md)。
 
-本文用于指导首版实现，不表示完整服务已可用。当前落地范围见[正式服务实现进度](../plan/implementation.md)，文件恢复细节见[文件与恢复](../files.md)，可执行部署步骤见[部署与升级](../deployment.md)。[独立原型](../../prototypes/compat/README.md)的实际范围与[验证证据](../research/2026-10-11-rust-wasm-compatibility.md)单独记录。operation 名称、字段和存储布局是据已确认规则拟定的实现契约；正式 Schema、迁移及 `describe` 输出必须与本文对齐。Rust/MCP/OAuth 或平台能力验证失败时，先说明差异，不静默更换技术栈或降低需求。
+本文描述首版实现契约；部署与实际验收范围见[正式服务云端验收](../research/2026-10-11-formal-cloud-acceptance.md)。当前落地范围见[正式服务实现进度](../plan/implementation.md)，文件恢复细节见[文件与恢复](../files.md)，可执行部署步骤见[部署与升级](../deployment.md)。[独立原型](../../prototypes/compat/README.md)的实际范围与[验证证据](../research/2026-10-11-rust-wasm-compatibility.md)单独记录。operation 名称、字段和存储布局是据已确认规则拟定的实现契约；正式 Schema、迁移及 `describe` 输出必须与本文对齐。Rust/MCP/OAuth 或平台能力验证失败时，先说明差异，不静默更换技术栈或降低需求。
 
 ## 1. 范围与技术取舍
 
@@ -363,7 +363,7 @@ Referer 保留原始值，不仅保存域名；缺失值表示未知。格式化
 
 ### 10.2 首次部署
 
-根目录已有正式 Cargo 工程、版本化迁移、初始化 CLI、本地 Wrangler 配置及生产配置生成入口，可执行命令见[部署与升级](../deployment.md)。该流程尚未在正式云端完成验收；`prototypes/compat` 保持独立，不能直接对原型数据库应用正式迁移。
+根目录已有正式 Cargo 工程、版本化迁移、初始化 CLI、本地 Wrangler 配置及生产配置生成入口，可执行命令见[部署与升级](../deployment.md)。该流程已完成正式资源初始化和部署；`prototypes/compat` 保持独立，不能直接对原型数据库应用正式迁移。
 
 1. 配置 Rust/Wasm 工具链与 Wrangler，完成 Cloudflare 部署身份认证。
 2. 初始化入口按部署配置查找或创建 D1、KV、R2 和 Analytics Engine 所需资源，记录实际标识；重复运行复用资源，不覆盖或删除已有数据。
@@ -384,7 +384,7 @@ Rust 使用 workers-rs / worker-build 生成 Wasm 和平台入口，由 Wrangler
 
 ## 11. 实现前验证与验收对应
 
-当前已执行原型的本地 workerd 测试：官方 MCP SDK 工具发现与调用、JWT 验签、上传会话、160 MiB 流式 R2 上传及部分故障注入。云端已完成 Codex 真实 Managed OAuth 登录、Desktop 当前聊天工具调用、32 MiB 流式上传和匿名回读摘要校验、应用 Token 撤销。具体通过范围见[实验记录](../research/2026-10-11-rust-wasm-compatibility.md)。OAuth 自动刷新／撤销、Hermes、云端中断恢复及其他完整服务验收仍未验证。不能用 Rust 编译成功代替客户端端到端验证，也不能用平台接口存在代替采样、缓存和中断行为的实际证明。
+当前已执行原型的本地 workerd 测试：官方 MCP SDK 工具发现与调用、JWT 验签、上传会话、160 MiB 流式 R2 上传及部分故障注入。云端已完成 Codex 真实 Managed OAuth 登录、Desktop 当前聊天工具调用、32 MiB 流式上传和匿名回读摘要校验、应用 Token 撤销。具体通过范围见[实验记录](../research/2026-10-11-rust-wasm-compatibility.md)。此段为原型阶段证据；正式服务新增的 OAuth、上传及统计云端验收见[正式记录](../research/2026-10-11-formal-cloud-acceptance.md)。Hermes、云端中断恢复和跨节点故障注入仍未验证。不能用 Rust 编译成功代替客户端端到端验证，也不能用平台接口存在代替采样、缓存和中断行为的实际证明。
 
 ### 11.1 先完成最小兼容性原型
 

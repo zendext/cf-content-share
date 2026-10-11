@@ -76,3 +76,9 @@ CLOUDFLARE_ACCOUNT_ID=<account-id> node tests/stats-cloud-probe.mjs
 脚本从本地 `CLOUDFLARE_API_TOKEN` 读取凭据，不打印凭据或上游错误正文。它证明实际 SQL 支持 UTC 秒转换、时区分桶与 UTF-8 hex：纽约 2026-03-08 春季跳时、2026-11-01 秋季重复小时，以及上海 2026-10-10 16:30Z 的本地次日边界均符合预期。该证据不证明数据集读取、云端事件投递完整性或 5 分钟可见性；后者仍需正式绑定部署后的端到端验收。
 
 官方依据（2026-10-11 核对）：[SQL API 与采样权重](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/)、[时区函数](https://developers.cloudflare.com/analytics/analytics-engine/sql-reference/date-time-functions/)、[hex](https://developers.cloudflare.com/analytics/analytics-engine/sql-reference/encoding-functions/)、[数据点大小限制](https://developers.cloudflare.com/analytics/analytics-engine/limits/)、[后台提交行为](https://developers.cloudflare.com/analytics/analytics-engine/get-started/)。
+
+## 正式云端查询兼容性
+
+真实 Analytics Engine 在 `SELECT blob4 AS referer` 后拒绝 `ORDER BY blob4`，HTTP 422 为 `unable to find type of column`；只把排序改为 `referer` 即成功。样本的 `double1`／`blob1` 同样如此。来源、地区、热门资源及样本统一按 SELECT 输出别名排序，WHERE 和 GROUP BY 仍使用原列；没有改变分组维度、排序方向或游标语义。
+
+回归在外部 SQL 边界复现此约束，修复前失败、修复后完整检查 70 项通过。真实视图、样本分页、访问计数及投递延迟见[正式云端验收](research/2026-10-11-formal-cloud-acceptance.md)，不再用仅返回固定 JSON 的 SQL mock 作为平台兼容性的证据。

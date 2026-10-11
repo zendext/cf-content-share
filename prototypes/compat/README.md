@@ -1,5 +1,7 @@
 # Rust/Wasm 最小兼容性原型
 
+本目录保留原型实现和历史实验。当前主入口已切换到正式服务，`wrangler.jsonc` 只保留两个旧测试链接的独立 Route；不要恢复原型的 `share.example.com/*` 通配路由。正式部署及验收见[云端记录](../../docs/research/2026-10-11-formal-cloud-acceptance.md)。
+
 本目录用于验证[技术设计 11.1](../../docs/design/technical.md#111-先完成最小兼容性原型)中的 MCP、认证及流式上传链路。全部业务代码在 Rust/Wasm 执行；JavaScript 只用于 worker-build 生成的平台入口和测试客户端。资源名中的 `compat` 是 compatibility 的缩写，表示兼容性原型专用资源。
 
 ## 运行与验证
@@ -88,7 +90,7 @@ Worker 只接受 `Cf-Access-Jwt-Assertion`，校验 RS256、签名、issuer、au
 
 Python 默认 User-Agent 请求实测被 Cloudflare 边缘返回 1010；Node fetch 正常。Zone 的 Browser Integrity Check 当前开启，UA Rules API 无读取权限，尚未将原因唯一定位到某条规则。保留原有 Zone 安全设置，实际客户端若遇到 1010 需继续做针对该子域名的排查。
 
-完整服务后续还需要 KV namespace/绑定、Analytics Engine dataset/查询凭据、5 分钟 Cron 配置，以及正式数据库迁移。KV 用于公开资源映射和状态缓存；当前原型直接读 D1，未使用 KV。Cache API 与 Cron 不需要另建存储实例。以上尚不属于本原型已验证能力。
+根目录正式服务现已具备 KV、Analytics Engine、五分钟 Cron 和正式数据库迁移；下述历史原型仍不包含这些能力。KV 用于公开资源映射和状态缓存；当前原型直接读 D1，未使用 KV。Cache API 与 Cron 不需要另建存储实例。以上尚不属于本原型已验证能力。
 
 Token 通过现有环境或本地秘密文件提供，不写入 Git 或聊天。只读 API 成功仅证明可读，不代表写入权限已通过验证；实际初始化仍需检查每步 API 返回值。
 

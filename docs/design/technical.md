@@ -1,10 +1,10 @@
 # cf-content-share 首版技术设计
 
-- 状态：技术方向与用户可见规则已确认；最小原型通过本地验证及 Codex Desktop 云端登录、工具与上传验证，完整服务和剩余兼容性验收待完成。
+- 状态：技术方向与用户可见规则已确认；原型通过本地及 Codex Desktop 云端验证。正式工程第一批短链与 KV 恢复已通过本地测试，文件、统计和完整服务验收待完成。
 - 更新日期：2026-10-11。
 - 需求基线：[产品需求](../requirements/product.md)。
 
-本文用于指导首版实现，不表示完整服务已可用。[独立原型](../../prototypes/compat/README.md)的实际范围与[验证证据](../research/2026-10-11-rust-wasm-compatibility.md)单独记录。operation 名称、字段和存储布局是据已确认规则拟定的实现契约；正式 Schema、迁移及 `describe` 输出必须与本文对齐。Rust/MCP/OAuth 或平台能力验证失败时，先说明差异，不静默更换技术栈或降低需求。
+本文用于指导首版实现，不表示完整服务已可用。当前落地范围见[正式服务实现进度](../plan/implementation.md)。[独立原型](../../prototypes/compat/README.md)的实际范围与[验证证据](../research/2026-10-11-rust-wasm-compatibility.md)单独记录。operation 名称、字段和存储布局是据已确认规则拟定的实现契约；正式 Schema、迁移及 `describe` 输出必须与本文对齐。Rust/MCP/OAuth 或平台能力验证失败时，先说明差异，不静默更换技术栈或降低需求。
 
 ## 1. 范围与技术取舍
 
@@ -361,7 +361,7 @@ Referer 保留原始值，不仅保存域名；缺失值表示未知。格式化
 
 ### 10.2 首次部署
 
-以下为完整服务待实现的部署流程，不是已经可执行的一键安装指南。当前 Cargo 工程、Wrangler 配置与 D1 迁移只用于 `prototypes/compat` 兼容性实验；不能作为完整服务部署或升级基线。
+以下为完整服务待实现的部署流程，不是已经可执行的一键安装指南。根目录已建立正式 Cargo 工程、短链迁移和本地 Wrangler 配置，尚无正式云端初始化／部署入口；`prototypes/compat` 保持独立。两者当前均不能作为完整服务的部署或升级基线。
 
 1. 配置 Rust/Wasm 工具链与 Wrangler，完成 Cloudflare 部署身份认证。
 2. 初始化入口按部署配置查找或创建 D1、KV、R2 和 Analytics Engine 所需资源，记录实际标识；重复运行复用资源，不覆盖或删除已有数据。

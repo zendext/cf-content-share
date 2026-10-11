@@ -1,4 +1,4 @@
-use crate::{auth, catalog, error, json_response, recovery, resources, store};
+use crate::{auth, catalog, error, json_response, recovery, resources, sessions, store};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -77,7 +77,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
     }
     let result = match value["method"].as_str().unwrap_or_default() {
         "initialize" => {
-            json!({"protocolVersion":VERSION,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"cf-content-share","version":"0.1.0"},"instructions":"先调用 describe，按目录调用 invoke；当前实现短链管理，上传与统计尚未接入。"})
+            json!({"protocolVersion":VERSION,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"cf-content-share","version":"0.1.0"},"instructions":"先调用 describe，按目录调用 invoke；通过 session.create 发现 HTTP 上传协议；文件正文不放入 MCP JSON。"})
         }
         "ping" => json!({}),
         "tools/list" => json!({"tools":[
@@ -100,7 +100,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                     Ok(_) if explicitly_null => tool_error("INVALID_ARGUMENTS"),
                     Err(_) => tool_error("INVALID_ARGUMENTS"),
                     Ok(Describe { operation: None }) => tool_result(
-                        json!({"operations":catalog::definitions().iter().map(|op| json!({"name":op.name,"description":op.description})).collect::<Vec<_>>(),"defaults":{"resource_id_length":12,"list_limit":20,"list_max_limit":100,"mapping_freshness_seconds":60,"time_format":"UTC Unix seconds","automatic_retry_limit":10},"implementation":"url-resources; uploads and analytics pending"}),
+                        json!({"operations":catalog::definitions().iter().map(|op| json!({"name":op.name,"description":op.description})).collect::<Vec<_>>(),"defaults":{"resource_id_length":12,"list_limit":20,"list_max_limit":100,"mapping_freshness_seconds":60,"time_format":"UTC Unix seconds","automatic_retry_limit":10,"upload_session_seconds":86400},"implementation":"url-and-file-resources; analytics pending"}),
                         false,
                     ),
                     Ok(Describe {
@@ -147,6 +147,10 @@ async fn invoke(input: &Value, env: &Env) -> Result<Value> {
     use catalog::Action;
     let a = &args.arguments;
     let result = match definition.operation {
+        Action::CreateSession => sessions::create(env, a).await,
+        Action::ListSessions => sessions::list(env, a).await,
+        Action::RevokeSession => sessions::revoke(env, a["session_id"].as_str().unwrap()).await,
+        Action::Storage => store::storage(env).await,
         Action::CreateUrl => resources::create(env, a).await,
         Action::ListResources => resources::list(env, a, false).await,
         Action::GetResource => resources::get(env, a["resource_id"].as_str().unwrap()).await,

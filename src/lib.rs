@@ -4,7 +4,9 @@ mod mcp;
 mod public;
 mod recovery;
 mod resources;
+mod sessions;
 mod store;
+mod upload;
 
 use serde_json::json;
 use worker::*;
@@ -20,11 +22,17 @@ pub fn error(code: &str, status: u16) -> Result<Response> {
 }
 
 #[event(fetch)]
-async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     let result = match (req.method(), req.path().as_str()) {
+        (Method::Post, "/upload") => upload::handle(&mut req, &env).await,
         (_, "/mcp") => mcp::handle(&mut req, &env).await,
         (Method::Get | Method::Head, path) if path.starts_with("/r/") => {
-            public::read(&path[3..], &env).await
+            public::read(&req, &path[3..], &env, &ctx)
+                .await
+                .map(|read| {
+                    let _ = read.kind;
+                    read.response
+                })
         }
         _ => error("NOT_FOUND", 404),
     };

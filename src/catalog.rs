@@ -10,6 +10,10 @@ pub enum Action {
     ListOperations,
     GetOperation,
     RetryOperation,
+    CreateSession,
+    ListSessions,
+    RevokeSession,
+    Storage,
 }
 
 pub struct Definition {
@@ -47,6 +51,42 @@ fn page(mut properties: Value) -> Value {
 pub fn definitions() -> Vec<Definition> {
     vec![
         Definition {
+            operation: Action::CreateSession,
+            name: "session.create",
+            description: "建立 24 小时多文件上传会话",
+            schema: schema(json!({"client":string(256)}), &[]),
+            result: "session_id、仅本次返回的 token、created_at、expires_at、HTTP 上传协议与 metadata Schema",
+            side_effects: "只持久保存 Token 摘要；OAuth 撤销不自动撤销会话",
+            example: json!({"client":"Codex"}),
+        },
+        Definition {
+            operation: Action::ListSessions,
+            name: "session.list",
+            description: "分页列出上传会话；不返回凭据",
+            schema: page(json!({})),
+            result: "items、has_more、next_cursor",
+            side_effects: "无",
+            example: json!({"limit":20}),
+        },
+        Definition {
+            operation: Action::RevokeSession,
+            name: "session.revoke",
+            description: "撤销会话，拒绝新的上传",
+            schema: schema(json!({"session_id":identifier()}), &["session_id"]),
+            result: "撤销后的会话信息",
+            side_effects: "已受理上传仍可收尾",
+            example: json!({"session_id":"session-id"}),
+        },
+        Definition {
+            operation: Action::Storage,
+            name: "storage.get",
+            description: "查询容量计数与可选限制",
+            schema: schema(json!({}), &[]),
+            result: "published_bytes、reserved_bytes、cleanup_bytes、total_storage_bytes、max_file_bytes；null 表示无产品限制",
+            side_effects: "无",
+            example: json!({}),
+        },
+        Definition {
             operation: Action::CreateUrl,
             name: "resource.create_url",
             description: "幂等创建 12 位短链",
@@ -63,7 +103,7 @@ pub fn definitions() -> Vec<Definition> {
             name: "resource.list",
             description: "分页搜索已发布资源",
             schema: page(
-                json!({"keyword":string(512),"kind":{"type":"string","enum":["url"]},"tags":tags(),"created_from":{"type":"integer","minimum":0,"maximum":9007199254740991u64},"created_to":{"type":"integer","minimum":0,"maximum":9007199254740991u64}}),
+                json!({"keyword":string(512),"filename":string(1024),"kind":{"type":"string","enum":["url","image","file"],"description":"url, image, or other file"},"tags":tags(),"created_from":{"type":"integer","minimum":0,"maximum":9007199254740991u64},"created_to":{"type":"integer","minimum":0,"maximum":9007199254740991u64}}),
             ),
             result: "items、has_more、next_cursor；created_at 和 id 倒序，时间为 UTC Unix 秒，区间 [from,to)",
             side_effects: "无；多个标签全部匹配，游标绑定筛选条件",
@@ -122,7 +162,7 @@ pub fn definitions() -> Vec<Definition> {
         Definition {
             operation: Action::RetryOperation,
             name: "operation.retry",
-            description: "重新安排未完成的 KV 同步",
+            description: "重新安排可由服务端完成的恢复步骤",
             schema: schema(json!({"operation_id":identifier()}), &["operation_id"]),
             result: "当前 operation；已完成或仍有有效执行占用时不重置",
             side_effects: "开始新一轮最多 10 次自动重试；保留累计尝试数与最后失败信息；不撤销删除",
@@ -193,4 +233,17 @@ pub fn validate(schema: &Value, value: &Value) -> bool {
         }),
         _ => false,
     }
+}
+
+pub fn upload_schema() -> Value {
+    schema(
+        json!({"operation_id":identifier(),"filename":{"type":"string","minLength":1,"maxLength":1024},"content_type":{"type":"string","minLength":1,"maxLength":255},"size_bytes":{"type":"integer","minimum":0,"maximum":9007199254740991u64},"sha256":{"type":"string","minLength":64,"maxLength":64},"title":string(512),"description":string(8192),"tags":tags()}),
+        &[
+            "operation_id",
+            "filename",
+            "content_type",
+            "size_bytes",
+            "sha256",
+        ],
+    )
 }

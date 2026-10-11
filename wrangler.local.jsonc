@@ -19,5 +19,6 @@
     "database_id": "00000000-0000-0000-0000-000000000001",
     "migrations_dir": "migrations"
   }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "cf-content-share-local" }],
   "kv_namespaces": [{ "binding": "MAPPINGS", "id": "00000000000000000000000000000001" }]
 }

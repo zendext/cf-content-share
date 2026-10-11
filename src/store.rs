@@ -10,6 +10,12 @@ pub fn now() -> i64 {
 }
 pub fn failure(code: &str, step: &str, retryable: bool) -> Value {
     let message = match code {
+        "UNAUTHORIZED" => "上传会话缺失、已撤销或已到期。",
+        "INVALID_METADATA" => "上传元数据不符合 session.create 返回的 Schema 或上传约束。",
+        "INVALID_MULTIPART" => "请求必须使用合法的 multipart/form-data。",
+        "FILE_TOO_LARGE" => "声明文件大小超过 MAX_FILE_BYTES。",
+        "CAPACITY_EXCEEDED" => "已发布、预留及待清理空间之和无法容纳该文件。",
+        "IMMUTABLE_FILE" => "托管文件的字节属性和目标不可编辑；请创建新资源。",
         "INVALID_ARGUMENTS" => "参数不符合 describe 返回的 Schema 或操作约束。",
         "UNKNOWN_OPERATION" => "操作未实现；请先调用 describe 查询当前目录。",
         "NOT_FOUND" => "未找到指定资源或操作。",
@@ -55,6 +61,12 @@ pub struct Resource {
     pub tags: String,
     pub created_at: i64,
     pub deleted_at: Option<i64>,
+    pub file_key: Option<String>,
+    pub filename: Option<String>,
+    pub content_type: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub sha256: Option<String>,
+    pub accounting: String,
 }
 impl Resource {
     pub fn output(&self, env: &Env) -> Result<Value> {
@@ -89,10 +101,13 @@ pub struct Operation {
     pub lease_until: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub upload_state: String,
+    pub upload_token: Option<String>,
+    pub r2_status: String,
 }
 impl Operation {
     pub fn output(&self) -> Value {
-        json!({"operation_id":self.id,"type":self.r#type,"resource_id":self.resource_id,"status":self.status,"steps":{"d1":"completed","kv":self.kv_status},"last_error":self.error_code.as_ref().map(|code| json!({"code":code,"step":"kv_sync","retryable":true,"message":"同步未完成；任务已保存，按 operation 状态判断是否等待或手动重试。"})),"retry_count":self.retry_count,"total_attempts":self.total_attempts,"next_retry_at":self.next_retry_at,"created_at":self.created_at,"updated_at":self.updated_at})
+        json!({"operation_id":self.id,"type":self.r#type,"resource_id":self.resource_id,"status":self.status,"steps":{"d1":"completed","kv":self.kv_status,"upload":self.upload_state,"r2_cleanup":self.r2_status},"last_error":self.error_code.as_ref().map(|code| json!({"code":code,"step":match code.as_str(){"KV_SYNC_FAILED"=>"kv_sync","D1_PUBLISH_FAILED"=>"d1_publish","UPLOAD_ACTIVE"|"UPLOAD_STREAM_OR_CHECKSUM_FAILED"|"UPLOAD_REQUIRES_RETRANSMIT"=>"upload",_=>"r2_cleanup"},"retryable":!matches!(code.as_str(),"OBJECT_OWNERSHIP_MISMATCH"|"UPLOAD_STREAM_OR_CHECKSUM_FAILED"|"UPLOAD_REQUIRES_RETRANSMIT"),"message":"任务保留了当前步骤与最近错误；上传正文缺失时由客户端沿用原参数重传，其他未完成步骤可通过 operation.retry 重新安排。"})),"retry_count":self.retry_count,"total_attempts":self.total_attempts,"next_retry_at":self.next_retry_at,"created_at":self.created_at,"updated_at":self.updated_at})
     }
 }
 pub async fn operation(env: &Env, id: &str) -> Result<Option<Operation>> {
@@ -147,4 +162,37 @@ pub fn encode_cursor(args: &Value, scope: &str, created_at: i64, id: &str) -> Re
         created_at,
         id: id.into(),
     })?))
+}
+
+pub fn limit(env: &Env, name: &str) -> Result<Option<u64>> {
+    env.var(name)
+        .ok()
+        .map(|v| {
+            v.to_string()
+                .parse::<u64>()
+                .ok()
+                .filter(|n| *n <= 9_007_199_254_740_991)
+                .ok_or_else(|| Error::RustError("invalid storage limit".into()))
+        })
+        .transpose()
+}
+pub async fn storage(env: &Env) -> Result<Value> {
+    let mut usage = env
+        .d1("DB")?
+        .prepare(
+            "SELECT published_bytes,reserved_bytes,cleanup_bytes FROM storage_usage WHERE id=1",
+        )
+        .first::<Value>(None)
+        .await?
+        .ok_or_else(|| Error::RustError("missing storage accounting".into()))?;
+    usage["total_storage_bytes"] = json!(limit(env, "TOTAL_STORAGE_BYTES")?);
+    usage["max_file_bytes"] = json!(limit(env, "MAX_FILE_BYTES")?);
+    Ok(usage)
+}
+
+pub fn object_key(id: &str, attempt_token: &str) -> String {
+    format!(
+        "objects/{id}/{}",
+        hex::encode(Sha256::digest(attempt_token.as_bytes()))
+    )
 }

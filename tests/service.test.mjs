@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign, randomUUID } from 'node:crypto';
+import { generateKeyPairSync, sign, randomUUID, createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -18,7 +18,9 @@ function jwt(changes = {}, header = {}) {
 }
 let mf, db, kv, client;
 let failPut = false, failGet = false, collide = false;
-let onPut;
+let onPut,onR2Put,onR2Stored,onR2Delete,onHeartbeat,onCachePut,onCacheStored;
+let failCacheRead=false,failCacheWrite=false,failR2Get=false;
+let limits={};
 let clockOffset = 0;
 const now = () => Math.floor(Date.now() / 1000);
 const create = (extra = {}) => call('resource.create_url', { operation_id: randomUUID(), target_url: 'https://example.com/', ...extra });
@@ -48,10 +50,18 @@ before(async () => {
     ],
     compatibilityDate: '2026-10-11',
     bindings: { PUBLIC_ORIGIN: origin, ACCESS_ISSUER: issuer, ACCESS_AUD: 'compat-aud' },
-    d1Databases: ['DB'], kvNamespaces: ['MAPPINGS'],
+    d1Databases: ['DB'], kvNamespaces: ['MAPPINGS'], r2Buckets: ['FILES'],
     serviceBindings: { FAULTS: async req => {
       const path = new URL(req.url).pathname;
-      if (path === '/request') { const result = Response.json({ collide, offset: clockOffset }); collide = false; return result; }
+      if (path === '/request') { const result = Response.json({ collide, offset: clockOffset, limits }); collide = false; return result; }
+      if(path==='/r2-get' && failR2Get)return new Response('failed',{status:503});
+      if(path==='/cache-match' && failCacheRead)return new Response('failed',{status:503});
+      if(path==='/cache-put'){if(onCachePut)onCachePut(await req.json());if(failCacheWrite)return new Response('failed',{status:503});}
+      if(path==='/cache-stored' && onCacheStored)onCacheStored(await req.json());
+      if(path==='/heartbeat') return Response.json(onHeartbeat ? await onHeartbeat() : {tick:false});
+      if(path==='/r2-put' && onR2Put) {const result=await onR2Put(await req.json());if(result===false)return new Response('failed',{status:503});}
+      if(path==='/r2-stored' && onR2Stored) await onR2Stored(await req.json());
+      if(path==='/r2-delete' && onR2Delete) {const result=await onR2Delete(await req.json());if(result===false)return new Response('failed',{status:503});}
       if (path === '/kv-put') {
         if (onPut) await onPut(await req.json());
         if (failPut) return new Response('failure', { status: 503 });
@@ -67,6 +77,8 @@ before(async () => {
   db = await mf.getD1Database('DB');
   kv = await mf.getKVNamespace('MAPPINGS');
   await db.exec((await readFile('migrations/0001_resources.sql', 'utf8')).replaceAll('\n', ' '));
+  await db.exec("INSERT INTO resources(id,kind,state,target_url,title,created_at) VALUES('LegacyUrl001','url','published','https://example.com/legacy','legacy',1); INSERT INTO operations(id,type,resource_id,fingerprint,created_at,updated_at,next_retry_at) VALUES('legacy-op','resource.create_url','LegacyUrl001','legacy-fingerprint',1,1,0)");
+  await db.exec((await readFile('migrations/0002_files.sql', 'utf8')).replace(/^--.*$/gm, '').replaceAll('\n', ' '));
   client = new Client({ name: 'service-test', version: '1.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(origin + '/mcp'), {
     fetch: (url, init) => mf.dispatchFetch(String(url), init),
@@ -106,13 +118,13 @@ test('Access assertion verification, origin checks and MCP protocol boundaries',
   assert.equal((await unknown.json()).error.code, -32601);
   assert.equal((await request('/r/invalid')).headers.get('cache-control'), 'no-store');
   assert.equal(await (await request('/r/invalid', { method: 'HEAD' })).text(), '');
-  assert.equal((await request('/upload', { method: 'POST' })).status, 404);
+  assert.equal((await request('/upload', { method: 'POST' })).status, 401);
 });
 
 test('two tools discover strict operation schemas, results, side effects and valid examples', async () => {
   assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ['describe', 'invoke']);
   const catalog = await client.callTool({ name: 'describe', arguments: {} });
-  assert.equal(catalog.structuredContent.operations.length, 8);
+  assert.equal(catalog.structuredContent.operations.length, 12);
   const invalidDescribe = await client.callTool({ name: 'describe', arguments: { operation: null } });
   assert.equal(invalidDescribe.isError, true);
   for (const op of catalog.structuredContent.operations) {
@@ -129,7 +141,7 @@ test('two tools discover strict operation schemas, results, side effects and val
   for (const limit of [0, 101, 1.5, '20', null]) await errorCall('resource.list', { limit }, 'INVALID_ARGUMENTS');
   await errorCall('resource.get', { resource_id: '............' }, 'INVALID_ARGUMENTS');
   await errorCall('resource.list', { created_from: 10, created_to: 5 }, 'INVALID_TIME_RANGE');
-  await errorCall('session.create', {}, 'UNKNOWN_OPERATION');
+  await errorCall('unimplemented.operation', {}, 'UNKNOWN_OPERATION');
 });
 
 test('concurrent creates and response loss keep one resource; conflicts and D1 aborts leave no orphan', async () => {
@@ -399,4 +411,295 @@ test('the tenth interrupted automatic attempt stops until manually resumed', asy
   await call('operation.retry', { operation_id });
   await cron();
   assert.equal((await call('operation.get', { operation_id })).operation.status, 'completed');
+});
+
+function multipart(data, changes = {}, tail = '') {
+  const boundary = 'formal-boundary';
+  const metadata = { operation_id: randomUUID(), filename: 'fixture.bin', content_type: 'application/octet-stream', size_bytes: data.length, sha256: createHash('sha256').update(data).digest('hex'), ...changes };
+  return { metadata, contentType: `multipart/form-data; boundary=${boundary}`, body: Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="metadata"\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="fixture.bin"\r\n\r\n`),
+    data, Buffer.from(`\r\n--${boundary}${tail || '--\r\n'}`),
+  ]) };
+}
+const upload = (token,form) => request('/upload',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':form.contentType},body:form.body,duplex:'half'});
+async function uploaded(data, changes={}) {
+ const {token}=await call('session.create');const form=multipart(data,changes);const response=await upload(token,form);
+ assert.equal(response.status,201,await response.clone().text());return {...await response.json(),token,form};
+}
+
+test('session tokens are hash-only, valid for 24h, reusable, paginated and revocable',async()=>{
+ const session=await call('session.create',{client:'file-test'});
+ assert.equal(session.expires_at-session.created_at,86400);
+ const row=await db.prepare('SELECT * FROM upload_sessions WHERE id=?').bind(session.session_id).first();
+ assert.equal(row.token_hash,createHash('sha256').update(session.token).digest('hex'));assert(!JSON.stringify(row).includes(session.token));
+ assert(session.upload.metadata_schema.properties.sha256);
+ for(const data of [Buffer.alloc(0),Buffer.from('second upload')]){
+ const form=multipart(data);const response=await upload(session.token,form);assert.equal(response.status,201,await response.clone().text());
+ const result=await response.json();assert.equal(result.resource.state,'published');assert.match(result.resource.id,/^[A-Za-z0-9]{12}$/);
+ assert.deepEqual(Buffer.from(await (await request('/r/'+result.resource.id)).arrayBuffer()),data);
+ assert.equal((await upload(session.token,form)).status,200);
+ }
+ const page=await call('session.list',{limit:1});assert(!JSON.stringify(page).includes(session.token));
+ await call('session.revoke',{session_id:session.session_id});assert.equal((await upload(session.token,multipart(Buffer.from('revoked')))).status,401);
+ const expired=await call('session.create');await db.prepare('UPDATE upload_sessions SET expires_at=0 WHERE id=?').bind(expired.session_id).run();
+ assert.equal((await upload(expired.token,multipart(Buffer.alloc(0)))).status,401);
+});
+
+test('same filename and same hash create independent resources; metadata is mutable, binary attributes are not',async()=>{
+ const tag=randomUUID();const data=Buffer.from('same');
+ const a=await uploaded(data,{filename:'中文 ABC 100%_1.bin',title:'file title',description:'description',tags:[tag]});
+ const b=await uploaded(data,{filename:a.resource.filename});assert.notEqual(a.resource.id,b.resource.id);
+ const conflicting=multipart(data,{...a.form.metadata,title:'changed'});assert.equal((await upload(a.token,conflicting)).status,409);
+ assert.equal((await call('resource.list',{keyword:'abc 100%_1',tags:[tag],kind:'file'})).items[0].id,a.resource.id);
+ assert.equal((await call('resource.list',{filename:a.resource.filename})).items.length,2);
+ await call('resource.update',{resource_id:a.resource.id,title:'edited',tags:[]});
+ await errorCall('resource.update',{resource_id:a.resource.id,target_url:'https://example.com/'},'IMMUTABLE_FILE');
+ await errorCall('resource.update',{resource_id:a.resource.id,filename:'changed'},'INVALID_ARGUMENTS');
+ assert.deepEqual(Buffer.from(await (await request('/r/'+a.resource.id)).arrayBuffer()),data);
+ const deleted=await call('resource.delete',{resource_id:a.resource.id});assert.equal(deleted.resource.state,'deleted');assert.equal(deleted.operation.steps.r2_cleanup,'completed');
+ assert.equal((await request('/r/'+a.resource.id)).status,404);assert.equal((await (await upload(a.token,a.form)).json()).resource.state,'deleted');
+});
+
+test('file ranges, HEAD, RFC filename, raw SVG and browser cache headers',async()=>{
+ const data=Buffer.from('0123456789');const a=await uploaded(data,{filename:'中文 "x".txt'});const path='/r/'+a.resource.id;
+ const response=await request(path);assert.equal(response.headers.get('cache-control'),'private, max-age=31536000, immutable');
+ assert.match(response.headers.get('content-disposition'),/^attachment; filename="/);assert(response.headers.get('content-disposition').includes("filename*=UTF-8''%E4%B8%AD%E6%96%87"));
+ await response.arrayBuffer();
+ for(const [range,expected,header] of [['bytes=2-4','234','bytes 2-4/10'],['bytes=7-','789','bytes 7-9/10'],['bytes=-3','789','bytes 7-9/10'],['bytes=0-99','0123456789','bytes 0-9/10']]){
+ const res=await request(path,{headers:{range}});assert.equal(res.status,206);assert.equal(res.headers.get('content-range'),header);assert.equal(await res.text(),expected);
+ }
+ for(const range of ['bytes=10-','bytes=-0','bytes=4-2','bytes=0-1,4-5']){const res=await request(path,{headers:{range}});assert.equal(res.status,416);assert.equal(res.headers.get('cache-control'),'no-store');}
+ const head=await request(path,{method:'HEAD'});assert.equal(head.status,200);assert.equal(head.headers.get('content-length'),'10');assert.equal(await head.text(),'');
+ const svg=Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>');
+ const image=await uploaded(svg,{content_type:'image/svg+xml',filename:'raw.svg'});assert.equal(image.resource.kind,'image');
+ const shown=await request('/r/'+image.resource.id);assert.equal(shown.headers.get('content-type'),'image/svg+xml');assert.match(shown.headers.get('content-disposition'),/^inline/);assert.equal(shown.headers.get('content-security-policy'),null);assert.equal(await shown.text(),svg.toString());
+});
+
+test('length/hash/framing failures release only fenced reservations and allow same-operation retransmit',async()=>{
+ const {token}=await call('session.create');const bucket=await mf.getR2Bucket('FILES');
+ for(const changes of [{size_bytes:1},{size_bytes:99},{sha256:'0'.repeat(64)}]){
+ const form=multipart(Buffer.from('wrong'),changes);const response=await upload(token,form);assert.equal(response.status,422,await response.clone().text());
+ const result=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(result.resource.state,'pending');assert.equal(result.resource.accounting,'released');assert.equal(result.operation.steps.upload,'needs_reupload');assert.equal(result.operation.status,'needs_attention');
+ const fence=await bucket.head(result.resource.file_key);assert.equal(fence.size,0);assert.equal(fence.customMetadata.role,'fence');
+ assert.equal((await request('/r/'+result.resource.id)).status,404);
+ }
+ const data=Buffer.from('retransmit');const good=multipart(data);const bad={...good,body:good.body.subarray(0,good.body.length-12)};
+ assert.equal((await upload(token,bad)).status,422);const old=await call('operation.get',{operation_id:good.metadata.operation_id});
+ const res=await upload(token,good);assert.equal(res.status,201,await res.clone().text());const recovered=await res.json();assert.equal(recovered.resource.id,old.resource.id);assert.notEqual(recovered.resource.file_key,old.resource.file_key);
+});
+
+test('complete owned object is recovered after D1 publication failure',async()=>{
+ const {token}=await call('session.create');const form=multipart(Buffer.from('publish recovery'));
+ await db.exec("CREATE TRIGGER fail_publish BEFORE UPDATE ON resources WHEN NEW.state='published' AND OLD.state='pending' BEGIN SELECT RAISE(ABORT,'publish failed'); END");
+ let result;try{const response=await upload(token,form);assert.equal(response.status,202);result=await response.json();assert.equal(result.resource.accounting,'reserved');assert.equal(result.resource.state,'pending');}finally{await db.exec('DROP TRIGGER fail_publish');}
+ await db.prepare('UPDATE operations SET next_retry_at=0,lease_until=0 WHERE id=?').bind(form.metadata.operation_id).run();await cron();
+ const recovered=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(recovered.resource.state,'published');assert.equal(recovered.resource.id,result.resource.id);assert.equal(await (await request('/r/'+result.resource.id)).text(),'publish recovery');
+});
+
+test('concurrent capacity admission and duplicate retries never overreserve or double count',async()=>{
+ const baseline=await call('storage.get');const used=baseline.published_bytes+baseline.reserved_bytes+baseline.cleanup_bytes;
+ limits={TOTAL_STORAGE_BYTES:used+10,MAX_FILE_BYTES:10};
+ try{
+ const {token}=await call('session.create');
+ assert.equal((await upload(token,multipart(Buffer.alloc(11)))).status,413);
+ const forms=[multipart(Buffer.alloc(10)),multipart(Buffer.alloc(10))];
+ const responses=await Promise.all(forms.map(form=>upload(token,form)));assert.deepEqual(responses.map(r=>r.status).sort(),[201,413]);
+ const winner=await responses.find(r=>r.status===201).json();
+ const usage=await call('storage.get');assert.equal(usage.published_bytes,baseline.published_bytes+10);assert.equal(usage.reserved_bytes,baseline.reserved_bytes);
+ await call('resource.delete',{resource_id:winner.resource.id});
+ const form=multipart(Buffer.alloc(10));const same=await Promise.all([upload(token,form),upload(token,form)]);assert.equal(same.filter(r=>r.status===201).length,1);assert(same.every(r=>[200,201,409].includes(r.status)));
+ const result=await call('operation.get',{operation_id:form.metadata.operation_id});await call('resource.delete',{resource_id:result.resource.id});
+ const after=await call('storage.get');assert.equal(after.published_bytes,baseline.published_bytes);assert.equal(after.reserved_bytes,baseline.reserved_bytes);
+ }finally{limits={};}
+});
+
+test('R2 cleanup failure retains capacity through retry exhaustion, manual reset and eventual deletion',async()=>{
+ const a=await uploaded(Buffer.alloc(13));const baseline=await call('storage.get');onR2Delete=()=>false;
+ let operation_id;
+ try{
+ const deleted=await call('resource.delete',{resource_id:a.resource.id});operation_id=deleted.operation.operation_id;
+ assert.equal(deleted.resource.accounting,'cleanup');assert.equal(deleted.operation.status,'retry_pending');assert.equal(deleted.operation.steps.kv,'accepted');assert.equal(deleted.operation.steps.r2_cleanup,'failed');assert.equal((await request('/r/'+a.resource.id)).status,404);
+ for(let i=1;i<=10;i++){await db.prepare('UPDATE operations SET next_retry_at=0 WHERE id=?').bind(operation_id).run();await cron();}
+ const stopped=await call('operation.get',{operation_id});assert.equal(stopped.operation.status,'needs_attention');assert.equal(stopped.operation.retry_count,10);
+ const usage=await call('storage.get');assert.equal(usage.published_bytes,baseline.published_bytes-13);assert.equal(usage.cleanup_bytes,baseline.cleanup_bytes+13);
+ }finally{onR2Delete=undefined;}
+ await call('operation.retry',{operation_id});await cron();
+ const done=await call('operation.get',{operation_id});assert.equal(done.resource.accounting,'released');assert.equal(done.operation.status,'completed');assert.equal(done.operation.total_attempts,12);
+ await call('operation.retry',{operation_id});await cron();assert.equal((await call('storage.get')).cleanup_bytes,baseline.cleanup_bytes);
+});
+
+test('160 MiB native checksum upload stays below 16 MiB Wasm memory',async()=>{
+ const chunk=Buffer.alloc(64*1024,0xa5),count=2560;const hash=createHash('sha256');for(let i=0;i<count;i++)hash.update(chunk);
+ const form=multipart(Buffer.alloc(0),{size_bytes:chunk.length*count,sha256:hash.digest('hex')});
+ const trailer=Buffer.from('\r\n--formal-boundary--\r\n'),prefix=form.body.subarray(0,form.body.length-trailer.length);let sent=-1;
+ form.body=new ReadableStream({pull(c){if(sent===-1)c.enqueue(prefix);else if(sent<count)c.enqueue(chunk);else{c.enqueue(trailer);c.close();}sent++;}});
+ let memory=0;onR2Stored=event=>{memory=Math.max(memory,event.memory)};
+ try{const {token}=await call('session.create');const response=await upload(token,form);assert.equal(response.status,201,await response.clone().text());const result=await response.json();assert.equal(result.resource.size_bytes,160*1024*1024);assert(memory<16*1024*1024,`Wasm memory ${memory}`);console.log('160MiB stream memory:',memory);await call('resource.delete',{resource_id:result.resource.id});}finally{onR2Stored=undefined;}
+});
+
+test('cached pending snapshot never hides a newly published file when KV publishing fails',async()=>{
+ const a=await uploaded(Buffer.from('visible'));
+ const mapping=JSON.parse(await kv.get(a.resource.id));await kv.put(a.resource.id,JSON.stringify({...mapping,state:'pending'}));
+ failPut=true;try{const response=await request('/r/'+a.resource.id);assert.equal(response.status,200);assert.equal(await response.text(),'visible');}finally{failPut=false;}
+});
+
+const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r});return {promise,resolve}};
+function heartbeatControl(){
+ let entered=deferred();const queue=[];
+ onHeartbeat=()=>{const reply=deferred();queue.push(reply);entered.resolve();return reply.promise;};
+ return {
+  async ready(){if(!queue.length)await entered.promise;},
+  async tick(){await this.ready();const reply=queue.shift();entered=deferred();clockOffset+=30000;reply.resolve({tick:true,offset:clockOffset});await entered.promise;},
+  close(){onHeartbeat=undefined;for(const reply of queue)reply.resolve({tick:false});}
+ };
+}
+
+test('independent heartbeat protects stalled file headers and paused R2 put beyond the original lease', {timeout:15000},async()=>{
+ for(const mode of ['file-header','r2-put']){
+  const heartbeat=heartbeatControl();const release=deferred();
+  const {token}=await call('session.create');const form=multipart(Buffer.from('heartbeat'));let controller;
+  if(mode==='file-header'){
+   const cut=form.body.indexOf(Buffer.from('Content-Disposition: form-data; name="file"'));
+   const original=form.body;
+   form.body=new ReadableStream({start(c){controller=c;c.enqueue(original.subarray(0,cut));release.promise.then(()=>{c.enqueue(original.subarray(cut));c.close();});}});
+  }else{onR2Put=async event=>{if(event.options.customMetadata.role!=='fence')await release.promise;};}
+  const uploading=upload(token,form);
+  try{
+   await heartbeat.ready();
+   for(let tick=0;tick<5;tick++)await heartbeat.tick();
+   await cron();
+   const pending=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(pending.operation.steps.upload,'uploading');assert.equal(pending.resource.accounting,'reserved');
+   assert.equal((await upload(token,multipart(Buffer.from('heartbeat'),form.metadata))).status,409);
+   release.resolve();const response=await uploading;assert.equal(response.status,201,await response.clone().text());
+  }finally{release.resolve();await uploading;heartbeat.close();onR2Put=undefined;clockOffset=0;}
+ }
+});
+
+test('lost heartbeat fences a delayed writer; same-operation retry uses another key and cannot be overwritten', {timeout:15000},async()=>{
+ const heartbeat=heartbeatControl(),release=deferred(),entered=deferred();let blockedKey;
+ onR2Put=async event=>{if(event.options.customMetadata.role!=='fence' && !blockedKey){blockedKey=event.key;entered.resolve();await release.promise;}};
+ const {token}=await call('session.create');const form=multipart(Buffer.from('fenced writer'));const uploading=upload(token,form);
+ try{
+  await entered.promise;await heartbeat.ready();
+  await db.exec("CREATE TRIGGER fail_heartbeat BEFORE UPDATE OF lease_until ON operations WHEN NEW.upload_state='uploading' AND NEW.lease_until>OLD.lease_until BEGIN SELECT RAISE(ABORT,'heartbeat failed'); END");
+  // Deliver one virtual timer; failure intentionally prevents scheduling the next.
+  onHeartbeat=undefined;
+  const pendingTimer=heartbeat; // ready barrier already proves timer registration.
+  // tick() waits for the next timer, so independently observe the operation transition.
+  void pendingTimer.tick();
+  const response=await uploading;assert.equal(response.status,422,await response.clone().text());
+  await db.exec('DROP TRIGGER fail_heartbeat');
+  const fenced=await response.json();assert.equal(fenced.operation.steps.upload,'needs_reupload');assert.equal(fenced.resource.accounting,'released');
+  const retry=await upload(token,form);assert.equal(retry.status,201,await retry.clone().text());const recovered=await retry.json();assert.notEqual(recovered.resource.file_key,blockedKey);assert.equal(recovered.resource.id,fenced.resource.id);
+  release.resolve();
+  const bucket=await mf.getR2Bucket('FILES');assert.equal((await bucket.head(blockedKey)).customMetadata.role,'fence');assert.equal(await (await request('/r/'+recovered.resource.id)).text(),'fenced writer');
+ }finally{release.resolve();await uploading;await db.exec('DROP TRIGGER IF EXISTS fail_heartbeat');heartbeat.close();onR2Put=undefined;onR2Stored=undefined;clockOffset=0;}
+});
+
+test('logical deletion racing an accepted upload keeps reserved bytes until upload has ended', {timeout:10000},async()=>{
+ const release=deferred(),entered=deferred();onR2Put=async event=>{if(event.options.customMetadata.role!=='fence'){entered.resolve();await release.promise;}};
+ const {token}=await call('session.create');const form=multipart(Buffer.from('delete during upload'));const uploading=upload(token,form);
+ try{
+  await entered.promise;const pending=await call('operation.get',{operation_id:form.metadata.operation_id});
+  const deletion=await call('resource.delete',{resource_id:pending.resource.id});assert.equal(deletion.resource.state,'deleted');assert.equal(deletion.resource.accounting,'reserved');assert.equal(deletion.operation.status,'retry_pending');
+  release.resolve();await uploading;
+  const result=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(result.resource.state,'deleted');assert.equal(result.resource.accounting,'released');assert.equal((await request('/r/'+result.resource.id)).status,404);
+  await db.prepare('UPDATE operations SET next_retry_at=0 WHERE id=?').bind(deletion.operation.operation_id).run();await cron();assert.equal((await call('operation.get',{operation_id:deletion.operation.operation_id})).operation.status,'completed');
+ }finally{release.resolve();await uploading;onR2Put=undefined;}
+});
+
+test('migration preserves deployed URL records, permanent IDs and original operation sequence',async()=>{
+ const result=await call('resource.get',{resource_id:'LegacyUrl001'});assert.equal(result.resource.title,'legacy');assert.equal(result.operation.operation_id,'legacy-op');
+ const response=await request('/r/LegacyUrl001',{redirect:'manual'});assert.equal(response.status,302);assert.equal(response.headers.get('location'),'https://example.com/legacy');
+ assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
+});
+
+test('body cache uses public 24h headers but never bypasses deleted or unavailable authoritative state',async()=>{
+ const a=await uploaded(Buffer.from('cached body'));const path='/r/'+a.resource.id;const stored=deferred();const writes=[];
+ onCachePut=event=>writes.push(event);onCacheStored=event=>{if(event.url.endsWith(path))stored.resolve()};
+ try{
+  assert.equal(await (await request(path)).text(),'cached body');await stored.promise;
+  assert.equal(writes[0].status,200);assert.equal(writes[0].cacheControl,'public, max-age=86400');
+  failR2Get=true;const hit=await request(path);assert.equal(hit.status,200);assert.equal(hit.headers.get('cache-control'),'private, max-age=31536000, immutable');assert.equal(await hit.text(),'cached body');
+  await kv.delete(a.resource.id);await db.exec('ALTER TABLE resources RENAME TO resources_offline');
+  try{assert.equal((await request(path)).status,503);}finally{await db.exec('ALTER TABLE resources_offline RENAME TO resources');}
+  // Logical deletion without evicting the cache proves state validation precedes cache access.
+  await db.prepare("UPDATE resources SET state='deleted',accounting='cleanup' WHERE id=?").bind(a.resource.id).run();await kv.delete(a.resource.id);
+  assert.equal((await request(path)).status,404);
+ }finally{failR2Get=false;onCachePut=undefined;onCacheStored=undefined;}
+});
+
+test('cache failures never turn successful R2 body reads into errors and partial responses are never cached',async()=>{
+ const a=await uploaded(Buffer.from('cache fault'));const writes=[];onCachePut=event=>writes.push(event);failCacheRead=true;failCacheWrite=true;
+ try{
+  const response=await request('/r/'+a.resource.id);assert.equal(response.status,200);assert.equal(await response.text(),'cache fault');
+  const partial=await request('/r/'+a.resource.id,{headers:{range:'bytes=1-3'}});assert.equal(partial.status,206);assert.equal(await partial.text(),'ach');
+  assert(writes.every(event=>event.status===200));
+ }finally{failCacheRead=false;failCacheWrite=false;onCachePut=undefined;}
+});
+
+test('ownership mismatch cannot publish a foreign object even with matching bytes and digest',async()=>{
+ const {token}=await call('session.create');const data=Buffer.from('owned bytes'),form=multipart(data);const bucket=await mf.getR2Bucket('FILES');
+ let once=true;onR2Put=async event=>{if(once && event.options.customMetadata.role!=='fence'){once=false;await bucket.put(event.key,data,{sha256:createHash('sha256').update(data).digest(),customMetadata:{upload_token:'foreign',operation_id:form.metadata.operation_id}});}};
+ try{const response=await upload(token,form);assert.equal(response.status,422);const result=await response.json();assert.equal(result.resource.state,'pending');assert.equal(result.resource.accounting,'reserved');assert.equal(result.operation.status,'needs_attention');assert.equal(result.operation.last_error.code,'OBJECT_OWNERSHIP_MISMATCH');assert.equal(result.operation.last_error.retryable,false);}finally{onR2Put=undefined;}
+});
+
+test('expired old recovery cannot fence or release the next upload attempt', {timeout:10000},async()=>{
+ const {token}=await call('session.create');const data=Buffer.from('next attempt'),form=multipart(data);const broken={...form,body:form.body.subarray(0,form.body.length-12)};
+ assert.equal((await upload(token,broken)).status,422);const failed=await call('operation.get',{operation_id:form.metadata.operation_id});
+ await call('operation.retry',{operation_id:form.metadata.operation_id});
+ const entered=deferred(),release=deferred();onPut=async mapping=>{if(mapping.id===failed.resource.id && mapping.state==='pending'){entered.resolve();await release.promise;}};
+ const recovering=cron();
+ try{
+  await entered.promise;
+  assert.equal((await upload(token,form)).status,409); // valid recovery lease blocks admission
+  await db.prepare('UPDATE operations SET lease_until=0 WHERE id=?').bind(form.metadata.operation_id).run();
+  const response=await upload(token,form);assert.equal(response.status,201,await response.clone().text());const result=await response.json();assert.notEqual(result.resource.file_key,failed.resource.file_key);
+  release.resolve();await recovering;
+  const current=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(current.resource.accounting,'published');assert.equal(current.operation.status,'completed');assert.equal(await (await request('/r/'+current.resource.id)).text(),'next attempt');
+ }finally{release.resolve();await recovering;onPut=undefined;}
+});
+
+test('KV failure does not hide successful file deletion and failed-upload deletion acknowledges prior cleanup',async()=>{
+ const a=await uploaded(Buffer.from('delete independently'));failPut=true;let deletion;
+ try{deletion=await call('resource.delete',{resource_id:a.resource.id});assert.equal(deletion.resource.accounting,'released');assert.equal(deletion.operation.steps.r2_cleanup,'completed');assert.equal(deletion.operation.steps.kv,'failed');assert.equal(deletion.operation.status,'retry_pending');}finally{failPut=false;}
+ await call('operation.retry',{operation_id:deletion.operation.operation_id});await cron();assert.equal((await request('/r/'+a.resource.id)).status,404);
+ const {token}=await call('session.create');const form=multipart(Buffer.from('bad hash'),{sha256:'0'.repeat(64)});const result=await (await upload(token,form)).json();
+ const deleted=await call('resource.delete',{resource_id:result.resource.id});assert.equal(deleted.operation.status,'completed');assert.equal(deleted.operation.steps.r2_cleanup,'completed');
+ const original=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(original.operation.steps.upload,'needs_reupload');assert.equal(original.operation.status,'needs_attention');assert.equal(original.resource.state,'deleted');
+});
+
+test('multipart extra fields, missing final delimiter and strict metadata never publish invalid content',async()=>{
+ const {token}=await call('session.create');
+ for(const tail of ['\r\nContent-Disposition: form-data; name="file"\r\n\r\nextra\r\n--formal-boundary--\r\n','-']){
+  for(const data of [Buffer.from('valid'),Buffer.alloc(0)]){const form=multipart(data,{},tail);const response=await upload(token,form);assert.equal(response.status,422);assert.equal((await response.json()).resource.state,'pending');}
+ }
+ for(const changes of [{unknown:1},{size_bytes:1.5},{size_bytes:9007199254740992},{sha256:'A'.repeat(64)},{title:null},{tags:['a','a']},{filename:'bad\r\nfilename'},{content_type:'text/html; charset=utf8'}]){
+  const response=await upload(token,multipart(Buffer.from('x'),changes));assert.equal(response.status,400,await response.clone().text());
+ }
+ const defaults=await call('storage.get');assert.equal(defaults.max_file_bytes,null);assert.equal(defaults.total_storage_bytes,null);
+ limits={MAX_FILE_BYTES:0};try{assert.equal((await upload(token,multipart(Buffer.from('x')))).status,413);assert.equal((await upload(token,multipart(Buffer.alloc(0)))).status,201);}finally{limits={};}
+});
+
+test('execution nonces stay private and admission limits do not rewrite committed idempotent results',async()=>{
+ const a=await uploaded(Buffer.from('stable result'));const internal=await db.prepare('SELECT upload_token FROM operations WHERE id=?').bind(a.form.metadata.operation_id).first();
+ assert(!JSON.stringify(a).includes(internal.upload_token));assert(!a.resource.file_key.includes(internal.upload_token));
+ limits={MAX_FILE_BYTES:0,TOTAL_STORAGE_BYTES:0};try{const response=await upload(a.token,a.form);assert.equal(response.status,200);assert.equal((await response.json()).resource.id,a.resource.id);}finally{limits={};}
+});
+
+test('request stream interruption keeps a recoverable unpublished operation', {timeout:10000},async()=>{
+ const {token}=await call('session.create');const form=multipart(Buffer.alloc(64*1024));const entered=deferred();let controller;
+ const prefix=form.body.subarray(0,form.body.length-32000);
+ form.body=new ReadableStream({start(c){controller=c;c.enqueue(prefix);}});
+ onR2Put=event=>{if(event.options.customMetadata.role!=='fence')entered.resolve();};
+ const pending=upload(token,form);
+ try{
+  await entered.promise;controller.error(new Error('client connection aborted'));
+  try{const response=await pending;assert.equal(response.status,422);}catch(error){assert.match(String(error),/client connection aborted|network|stream|fetch failed/i);}
+  const result=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(result.resource.state,'pending');
+  if(result.resource.accounting!=='released'){
+   await db.prepare('UPDATE operations SET lease_until=0,next_retry_at=0 WHERE id=?').bind(form.metadata.operation_id).run();await cron();
+  }
+  const recovered=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(recovered.resource.accounting,'released');assert.equal(recovered.operation.steps.upload,'needs_reupload');
+ }finally{onR2Put=undefined;await pending.catch(()=>{});}
 });

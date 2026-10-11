@@ -78,11 +78,14 @@ pub async fn update(env: &Env, args: &Value, delete: bool) -> Result<Value> {
     if !delete && args.as_object().unwrap().len() == 1 {
         return Ok(store::failure("INVALID_ARGUMENTS", "validation", false));
     }
+    if !delete && args.get("target_url").is_some() && resource.kind != "url" {
+        return Ok(store::failure("IMMUTABLE_FILE", "update", false));
+    }
     let db = env.d1("DB")?;
     let operation_id = auth::random_token()?;
     let now = store::now() as f64;
     let statement = if delete {
-        db.prepare("UPDATE resources SET state='deleted', target_url=NULL, description='', tags='[]', deleted_at=? WHERE id=? AND state='published'")
+        db.prepare("UPDATE resources SET state='deleted', target_url=NULL, description='', tags='[]', deleted_at=?, accounting=CASE WHEN accounting='published' THEN 'cleanup' ELSE accounting END WHERE id=? AND state IN ('pending','published')")
             .bind(&[now.into(), id.into()])?
     } else {
         let optional = |key: &str| {
@@ -95,8 +98,8 @@ pub async fn update(env: &Env, args: &Value, delete: bool) -> Result<Value> {
             .bind(&[optional("target_url"), optional("title"), optional("description"), args.get("tags").map(|tags| JsValue::from(tags.to_string())).unwrap_or(JsValue::NULL), id.into()])?
     };
     db.batch(vec![statement,
-        db.prepare("INSERT INTO operations(id,type,resource_id,fingerprint,created_at,updated_at,next_retry_at) SELECT ?,?,?,?,?,?,? WHERE changes()>0")
-            .bind(&[operation_id.clone().into(), (if delete {"resource.delete"} else {"resource.update"}).into(), id.into(), store::fingerprint(args).into(), now.into(), now.into(), now.into()])?,
+        db.prepare("INSERT INTO operations(id,type,resource_id,fingerprint,created_at,updated_at,next_retry_at,r2_status) SELECT ?,?,?,?,?,?,?,? WHERE changes()>0")
+            .bind(&[operation_id.clone().into(), (if delete {"resource.delete"} else {"resource.update"}).into(), id.into(), store::fingerprint(args).into(), now.into(), now.into(), now.into(), (if delete && resource.kind!="url" {"pending"} else {"none"}).into()])?,
     ]).await?;
     if store::operation(env, &operation_id).await?.is_none() {
         return if delete {
@@ -144,8 +147,16 @@ pub async fn list(env: &Env, args: &Value, operations: bool) -> Result<Value> {
                 .replace('%', "\\%")
                 .replace('_', "\\_");
             let pattern = format!("%{escaped}%");
-            sql.push_str(" AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')");
-            bindings.extend([pattern.clone().into(), pattern.into()]);
+            sql.push_str(" AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR filename LIKE ? ESCAPE '\\')");
+            bindings.extend([
+                pattern.clone().into(),
+                pattern.clone().into(),
+                pattern.into(),
+            ]);
+        }
+        if let Some(filename) = args["filename"].as_str() {
+            sql.push_str(" AND filename=?");
+            bindings.push(filename.into());
         }
         if let Some(tags) = args["tags"].as_array() {
             for tag in tags {

@@ -36,3 +36,44 @@ npm run dev
 `wrangler.local.jsonc` 仅供本地使用，资源 ID 是占位值，没有生产 Route。通过 `.dev.vars` 设置自己的 `ACCESS_ISSUER`、`ACCESS_AUD` 可配置本地 JWT 校验；没有跳过认证的开关，MCP 请求仍需有效 Access 断言。自动测试使用独立测试密钥和本地 D1/KV。
 
 本地迁移可重复执行。`npm run init:cloud -- --config deployment.local.json` 默认只读预览，显式 `--apply` 才创建缺失的正式 D1/KV/R2 资源和生成生产配置，具体见[部署与升级](docs/deployment.md)。统计 SQL 依赖真实 Analytics Engine 和 Worker Secret，本地开发绑定不会提供可查询的真实访问统计。Desktop 通过 `cf-content-share` 连接 `https://share.example.com/mcp`。
+
+## 安装 Agent Skill
+
+仓库提供 [cf-content-share Skill](skills/cf-content-share/SKILL.md) 和无 npm 依赖的 [上传脚本](skills/cf-content-share/scripts/upload.mjs)。它指导 Agent 使用已连接的 MCP 完成分享、上传及结果不明时的恢复；不会自动部署服务、配置 Cloudflare 或上传本地文件。
+
+需要可用的 cf-content-share MCP 连接及 Node.js 22+。尚未连接时，替换为自己的服务地址执行；已有连接不必重复添加：
+
+```sh
+codex mcp add cf-content-share --url https://share.example.com/mcp
+# 若还需单独登录：
+codex mcp login cf-content-share
+```
+
+在本仓库根目录执行下列命令，把 Skill 链接到用户级目录（Linux/macOS）。目标已存在时命令会停止，不覆盖已有安装：
+
+```sh
+mkdir -p "$HOME/.agents/skills"
+node --input-type=module <<'JS'
+import { realpath, symlink } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import path from 'node:path';
+const source = await realpath('skills/cf-content-share');
+const target = path.join(homedir(), '.agents/skills/cf-content-share');
+await symlink(source, target, 'dir');
+console.log(target);
+JS
+```
+
+链接方式随本仓库更新；不要再移动或删除源目录。希望固定一份安装时，也可以把整个 `skills/cf-content-share` 目录复制为 `~/.agents/skills/cf-content-share`，保留 `scripts/` 子目录。项目级安装可放到目标项目的 `.agents/skills/cf-content-share`。不要在多个扫描位置重复安装同名 Skill；已有同名安装时先核对路径，再决定更新方式。[Codex Skill 加载规则](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)。
+
+Codex 支持自动发现 Skill，也可在任务中写 `$cf-content-share`。没有出现时重启 Codex；MCP 配置变更后在 Desktop 的 MCP servers 设置中 Restart。其他 Agent 可复制整个目录到其支持的 Skill 位置，并单独连接 MCP。此处只提供安装方法，不会替用户修改全局 Skill 配置。
+
+典型请求：`用 $cf-content-share 把这个 PDF 分享出去，标题为“会议资料”`。Agent 将先发现 MCP 协议，再用脚本准备状态、读取私有会话文件并上传。手动查看脚本参数：
+
+```sh
+node skills/cf-content-share/scripts/upload.mjs --help
+```
+
+上传状态分为两个命令：`prepare` 计算摘要并保存固定操作标识，`send` 复用同一状态发送一次。`send` 退出 0 表示已发布；退出 1 表示本地输入或明确拒绝；退出 2 必须通过 MCP 查询 `operation.get`。不要把 202 当作上传成功，也不要在结果不明时重新 prepare 生成新 ID。Session JSON 保存 `session.create` 的结构化结果对象，Token 不通过命令行传递；POSIX 文件需为当前用户所有、0600 或更严格，Windows 需通过 ACL 限制访问。具体上传、会话复用及恢复步骤都在 Skill 中。
+
+验证：`npm run check` 包含 `tests/upload-skill.test.mjs`。仅运行客户端检查时，先 `npm run build`，再执行 `node --test tests/upload-skill.test.mjs`；测试使用临时目录、本地 HTTP 和真实 workerd，不连接云端或留下有效上传会话。

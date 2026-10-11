@@ -2,7 +2,7 @@
 
 - 更新：2026-10-11。
 - 依据：[已确认技术设计](../design/technical.md)、[产品验收要求](../requirements/product.md)。
-- 当前阶段：短链、文件与容量、统计、初始化 CLI 已实现，已通过 70 项组合回归；正式 Worker 已部署到 `share.example.com`，原型代码及环境已删除，Desktop MCP 已更名为 `cf-content-share`。
+- 当前阶段：短链、文件与容量、统计、初始化 CLI 和 Agent Skill 已实现，已通过 77 项组合回归；正式 Worker 已部署到 `share.example.com`，原型代码及环境已删除，Desktop MCP 已更名为 `cf-content-share`。
 
 ## 第一批：短链、权威状态与恢复
 
@@ -54,3 +54,13 @@
 完整组合检查通过 Rust fmt、Wasm Clippy（零警告）、Wasm 构建和 70 项测试（失败 0）；新增文件统计回归覆盖真实缓存命中、206、原始 SVG、删除传播期间成功访问，以及采集失败不改变响应。Wrangler 已在既有本地 0001 数据库上成功应用 0002，重复执行无待执行迁移；包含 D1/KV/R2/AE 的完整本地配置 dry-run 通过。最终配置启动后，未认证 MCP 与上传均返回 401、缺失资源返回 404、scheduled 入口返回 200。用户补齐 KV 权限后，正式 D1、KV、私有 Standard R2 已创建；重复初始化复用原 ID，云端 0001／0002 迁移与重复检查通过，实际绑定配置 dry-run 通过。正式 Worker 和统计查询 Secret 已部署；本轮 MCP、OAuth、上传和统计验收结果见[正式云端记录](../research/2026-10-11-formal-cloud-acceptance.md)。Hermes、云端 R2 故障注入及跨节点 KV 传播仍是独立验证边界。
 
 原型 Worker、D1、R2 及对象和两条旧链接 Route 已按用户要求删除，本地原型源码、依赖与构建缓存也已移除。两个旧测试链接返回 404。正式资源及优选入口保留；Access 应用显示名为 `cf-content-share MCP`，原有 audience 和 OAuth 配置不变。Desktop 移除旧配置和 OAuth 凭据后，以 `cf-content-share` 重新登录并重启 MCP；新命名空间下的 describe、storage.get 和 resource.list 实际调用通过。
+
+## Agent 使用入口
+
+仓库新增 `skills/cf-content-share/SKILL.md` 与标准库 Node 上传脚本，安装方式见[README](../../README.md#安装-agent-skill)。Skill 通过 MCP 发现接口，覆盖网址分享、管理、统计、会话复用、文件上传及按操作状态恢复，不复制服务 Schema，也不修改用户已配置的服务地址。
+
+上传脚本将 prepare 与 send 分开：先保存固定操作标识、参数及摘要，再校验源文件和私有会话并流式发送。只接受同 origin 的上传端点、不跟随重定向、不自动重试、只输出脱敏结果；结果不明通过原操作查询。安装目录可单独复制，运行不依赖仓库或 npm 包。
+
+Documentation impact：README 增加安装、依赖、入口和退出码说明，Skill 自身保存使用流程；服务端 API、数据库与云端部署没有变更。客户端测试覆盖私有文件／符号链接、文件变化、会话到期／来源不符、重定向和脱敏、未知结果、独立安装，以及真实 workerd 的 16 MiB／空文件、幂等重发和撤销。Miniflare 的内部 dispatch 代理在大请求被提前响应时曾截断响应；改用真实本地 HTTP 入口验证，未改动服务端行为。
+
+新增客户端检查 7 项通过；完整 `npm run check` 通过 Rust fmt、Wasm Clippy、Wasm 构建和 77 项测试（失败 0）。Skill 结构校验与脚本语法检查通过。本轮上传证据来自本地 HTTP 与 workerd，未用新脚本进行云端上传。

@@ -1,8 +1,8 @@
 # 正式服务实现进度
 
-- 更新：2026-10-11。
+- 更新：2026-10-12。
 - 依据：[已确认技术设计](../design/technical.md)、[产品验收要求](../requirements/product.md)。
-- 当前阶段：短链、文件与容量、统计、初始化 CLI 和 Agent Skill 已实现，已通过 77 项组合回归；正式 Worker 已部署到 `share.example.com`，原型代码及环境已删除，Desktop MCP 已更名为 `cf-content-share`。
+- 当前阶段：短链、文件与容量、统计、初始化 CLI 和 Agent Skill 已实现；本地回归当前为 79 项。正式 Worker 及本轮 MCP 版本兼容修复已部署到 `share.example.com`；原型代码及环境已删除，Desktop MCP 已更名为 `cf-content-share`。
 
 ## 第一批：短链、权威状态与恢复
 
@@ -64,3 +64,13 @@
 Documentation impact：README 增加安装、依赖、入口和退出码说明，Skill 自身保存使用流程；服务端 API、数据库与云端部署没有变更。客户端测试覆盖私有文件／符号链接、文件变化、会话到期／来源不符、重定向和脱敏、未知结果、独立安装，以及真实 workerd 的 16 MiB／空文件、幂等重发和撤销。Miniflare 的内部 dispatch 代理在大请求被提前响应时曾截断响应；改用真实本地 HTTP 入口验证，未改动服务端行为。
 
 新增客户端检查 7 项通过；完整 `npm run check` 通过 Rust fmt、Wasm Clippy、Wasm 构建和 77 项测试（失败 0）。Skill 结构校验与脚本语法检查通过。本轮上传证据来自本地 HTTP 与 workerd，未用新脚本进行云端上传。
+
+## MCP 版本兼容修复（2026-10-12）
+
+旧实现收到 `MCP-Protocol-Version: 2025-11-25` 时在初始化前返回 400。用户提供的 Hermes 日志确认 Streamable HTTP 首次 POST 返回 `UNSUPPORTED_PROTOCOL_VERSION`，自动降级 SSE 后 GET 返回 405，三次重试后进入 parked。后者是未提供 SSE 通道的预期响应，不应将配置改成 SSE。未携带版本头、只在初始化正文提出新版的官方 SDK 原本可以降级到 `2025-06-18`。
+
+修复将 HTTP 校验与初始化协商统一到 `2025-11-25`、`2025-06-18` 支持集合：优先回复客户端提出的受支持版本，未知正文版本回复首选版本，未知版本头仍拒绝。未扩大声明的可选能力。Documentation impact：技术设计第 5 节同步版本契约和规范来源；数据库、上传协议、OAuth 配置不变。
+
+两项新增回归在修改前分别复现 HTTP 400 和协商到旧版，修改后均通过；覆盖两版本的握手、通知、工具发现／调用、未知版本边界，以及官方 SDK 1.32.1 的新版协商和后续请求头。首轮 79 项测试有 1 项原有上传重发测试出现 HTTP 200 响应读取失败，该用例单独复跑及完整 79 项重跑均通过，间歇性原因未定位。发布前重新执行完整 `npm run check`，Rust fmt、Wasm Clippy、构建及 79/79 项测试均通过；正式配置 dry-run 通过。
+
+北京时间 2026-10-12 02:14，代码提交 `ea79c58` 部署为 Worker version `00000000-0000-0000-0000-000000000001`，部署列表回读确认 100% 流量；回滚基线为 `00000000-0000-0000-0000-000000000001`。发布前 D1 备份保存在仓库外，迁移检查无待执行项；pending/running/retry_pending 操作均为空，本次不变更数据模型、绑定或 Cron。部署后现有 Codex MCP 的 describe、storage.get 成功，容量计数为 0；无认证请求仍返回 401 与 OAuth challenge，两条已删除测试链接仍为 404。新版握手的直接证据来自本地 workerd／官方 SDK；Hermes 原生端须重新连接以退出 parked，其 OAuth 和自动连接成功尚未独立实测。

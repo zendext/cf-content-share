@@ -1,7 +1,7 @@
 # cf-content-share 首版技术设计
 
-- 状态：技术方向与用户可见规则已确认；原型通过本地及 Codex Desktop 云端验证。正式工程已实现短链、文件与容量恢复、统计和资源初始化，并提供 Agent Skill；已通过 77 项组合回归，正式服务已部署到 share.example.com；云端验收范围见正式验收记录。
-- 更新日期：2026-10-11。
+- 状态：技术方向与用户可见规则已确认；正式工程已实现短链、文件与容量恢复、统计和资源初始化，并提供 Agent Skill。本地测试当前为 79 项；正式服务及 MCP 版本兼容修复已部署到 share.example.com。验证证据及边界见实现进度与正式云端验收记录。
+- 更新日期：2026-10-12。
 - 需求基线：[产品需求](../requirements/product.md)。
 
 本文描述首版实现契约；部署与实际验收范围见[正式服务云端验收](../research/2026-10-11-formal-cloud-acceptance.md)。当前落地范围见[正式服务实现进度](../plan/implementation.md)，文件恢复细节见[文件与恢复](../files.md)，可执行部署步骤见[部署与升级](../deployment.md)。已退役原型的[历史验证证据](../research/2026-10-11-rust-wasm-compatibility.md)单独记录，原型代码和环境已删除。operation 名称、字段和存储布局是据已确认规则拟定的实现契约；正式 Schema、迁移及 `describe` 输出必须与本文对齐。Rust/MCP/OAuth 或平台能力验证失败时，先说明差异，不静默更换技术栈或降低需求。
@@ -97,6 +97,8 @@ Agent 将上传会话与操作标识保存在本机、按服务地址区分的�
 - 类型专属属性通过后续迁移按资源 ID 增加字段或关联表；首版不建空属性框架，不要求旧文件重传。
 
 ## 5. MCP 接口
+
+Streamable HTTP 支持 `2025-11-25` 和 `2025-06-18`。`initialize.params.protocolVersion` 属于支持集合时返回同一版本，否则返回首选版本 `2025-11-25`，由客户端决定是否接受；后续请求应使用协商版本的 `MCP-Protocol-Version`。显式携带不支持的版本头仍返回 HTTP 400；省略版本头保持现有兼容行为。版本头校验和初始化协商共用同一支持集合，不宣告未实现的 tasks、sampling 或 elicitation 能力。[版本协商规则](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation)、[HTTP 版本头规则](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#protocol-version-header)。
 
 ### 5.1 两个工具
 

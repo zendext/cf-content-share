@@ -8,7 +8,9 @@
     "dev": "wrangler dev --config wrangler.local.jsonc",
     "check": "cargo fmt --check && cargo clippy --target wasm32-unknown-unknown -- -D warnings && npm test",
     "db:migrate:local": "wrangler d1 migrations apply DB --local --config wrangler.local.jsonc",
-    "dry-run": "wrangler deploy --dry-run --config wrangler.local.jsonc"
+    "dry-run": "wrangler deploy --dry-run --config wrangler.local.jsonc",
+    "init:cloud": "node scripts/init-cloud.mjs",
+    "test:deployment": "node --test tests/deployment.test.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",

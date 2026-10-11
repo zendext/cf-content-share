@@ -1,0 +1,10 @@
+{
+  "account_id": "00000000000000000000000000000000",
+  "worker_name": "cf-content-share",
+  "resource_prefix": "cf-content-share",
+  "public_origin": "https://s.example.com",
+  "zone_name": "example.com",
+  "access_issuer": "https://replace-me.cloudflareaccess.com",
+  "access_aud": "0000000000000000000000000000000000000000000000000000000000000000",
+  "default_timezone": "Asia/Shanghai"
+}

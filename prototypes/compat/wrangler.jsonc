@@ -1,0 +1,22 @@
+{
+  "name": "cf-content-share-compat",
+  "account_id": "00000000000000000000000000000000",
+  "main": "build/index.js",
+  "compatibility_date": "2026-10-11",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "share.example.com", "custom_domain": true }],
+  "build": { "command": "npm run build" },
+  "vars": {
+    "PUBLIC_ORIGIN": "https://share.example.com",
+    "ACCESS_ISSUER": "https://example-team.cloudflareaccess.com",
+    "ACCESS_AUD": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "cf-content-share-compat",
+    "database_id": "00000000-0000-0000-0000-000000000001",
+    "migrations_dir": "migrations"
+  }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "cf-content-share-compat" }]
+}

@@ -4,7 +4,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use worker::*;
 
-const VERSION: &str = "2025-06-18";
+// Newest first: initialization falls back to the preferred supported version.
+const SUPPORTED_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18"];
 
 fn tool_result(value: Value, failed: bool) -> Value {
     json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value,"isError":failed})
@@ -34,7 +35,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
         return Ok(response);
     }
     if let Some(version) = req.headers().get("MCP-Protocol-Version")?
-        && version != VERSION
+        && !SUPPORTED_VERSIONS.contains(&version.as_str())
     {
         return error("UNSUPPORTED_PROTOCOL_VERSION", 400);
     }
@@ -77,7 +78,11 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
     }
     let result = match value["method"].as_str().unwrap_or_default() {
         "initialize" => {
-            json!({"protocolVersion":VERSION,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"cf-content-share","version":"0.1.0"},"instructions":"先调用 describe，按目录调用 invoke；通过 session.create 发现 HTTP 上传协议；文件正文不放入 MCP JSON。"})
+            let version = value["params"]["protocolVersion"]
+                .as_str()
+                .filter(|version| SUPPORTED_VERSIONS.contains(version))
+                .unwrap_or(SUPPORTED_VERSIONS[0]);
+            json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"cf-content-share","version":"0.1.0"},"instructions":"先调用 describe，按目录调用 invoke；通过 session.create 发现 HTTP 上传协议；文件正文不放入 MCP JSON。"})
         }
         "ping" => json!({}),
         "tools/list" => json!({"tools":[

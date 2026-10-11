@@ -121,6 +121,55 @@ test('Access assertion verification, origin checks and MCP protocol boundaries',
   assert.equal((await request('/upload', { method: 'POST' })).status, 401);
 });
 
+test('MCP negotiates supported versions and rejects unsupported HTTP version headers', async () => {
+  const initialize = protocolVersion => ({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+    protocolVersion, capabilities: {}, clientInfo: { name: 'version-test', version: '1.0.0' },
+  } });
+  for (const version of ['2025-11-25', '2025-06-18']) {
+    const headers = { 'mcp-protocol-version': version };
+    for (const requestHeaders of [headers, {}]) {
+      const response = await rpc(initialize(version), jwt(), requestHeaders);
+      assert.equal(response.status, 200, version);
+      assert.equal((await response.json()).result.protocolVersion, version);
+    }
+    assert.equal((await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' }, jwt(), headers)).status, 202);
+    const listed = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, jwt(), headers);
+    assert.equal(listed.status, 200);
+    assert.deepEqual((await listed.json()).result.tools.map(tool => tool.name), ['describe', 'invoke']);
+    const called = await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: {
+      name: 'describe', arguments: { operation: 'storage.get' },
+    } }, jwt(), headers);
+    const result = (await called.json()).result;
+    assert.equal(result.isError, false);
+    assert.equal(result.structuredContent.name, 'storage.get');
+  }
+  const fallback = await rpc(initialize('2099-01-01'));
+  assert.equal((await fallback.json()).result.protocolVersion, '2025-11-25');
+  for (const method of ['initialize', 'tools/list', 'notifications/initialized']) {
+    const response = await rpc({ ...initialize('2099-01-01'), method }, jwt(), { 'mcp-protocol-version': '2099-01-01' });
+    assert.equal(response.status, 400);
+  }
+});
+
+test('MCP SDK negotiates 2025-11-25 and uses it for subsequent tool calls', async t => {
+  const requests = [];
+  const sdk = new Client({ name: 'new-version-test', version: '1.0.0' });
+  t.after(() => sdk.close());
+  await sdk.connect(new StreamableHTTPClientTransport(new URL(origin + '/mcp'), {
+    requestInit: { headers: { 'cf-access-jwt-assertion': jwt() } },
+    fetch: (url, init) => {
+      if (init?.method === 'POST') requests.push({ body: JSON.parse(init.body), version: new Headers(init.headers).get('mcp-protocol-version') });
+      return mf.dispatchFetch(String(url), init);
+    },
+  }));
+  assert.deepEqual((await sdk.listTools()).tools.map(tool => tool.name), ['describe', 'invoke']);
+  const result = await sdk.callTool({ name: 'invoke', arguments: { operation: 'storage.get', arguments: {} } });
+  assert.equal(result.isError, false);
+  assert.equal(typeof result.structuredContent.published_bytes, 'number');
+  assert.equal(requests[0].body.params.protocolVersion, '2025-11-25');
+  for (const request of requests.slice(1)) assert.equal(request.version, '2025-11-25', request.body.method);
+});
+
 test('two tools discover strict operation schemas, results, side effects and valid examples', async () => {
   assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ['describe', 'invoke']);
   const catalog = await client.callTool({ name: 'describe', arguments: {} });

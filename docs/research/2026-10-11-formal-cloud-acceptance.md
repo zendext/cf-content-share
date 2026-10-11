@@ -1,5 +1,7 @@
 # 正式服务云端发布与验收
 
+> 后续状态：同日按用户要求完全删除原型环境和代码，旧链接不再保留；Desktop MCP 已更名为 `cf-content-share` 并实际验证调用。下面的旧链接保留与回退说明仅记录发布当时的实验，现已失效；当前操作见[部署文档](../deployment.md)。
+
 - 日期：2026-10-11；Cloudflare 时间为 UTC。
 - 目标：`https://share.example.com`，Rust/Wasm 正式 Worker `cf-content-share`。
 - 最终部署版本：`00000000-0000-0000-0000-000000000001`；首发代码基线 `099e140`，最终版本包含本次 AE 查询排序修复。
@@ -9,9 +11,9 @@
 
 独立正式 D1 `cf-content-share` 已应用 0001、0002；KV 为 `cf-content-share-mappings`，私有 Standard R2 为 `cf-content-share`，AE dataset 为 `cf_content_share`，时区默认 `Asia/Shanghai`。`ANALYTICS_API_TOKEN` 按用户明确要求复用既有部署 Token，保存为 Worker Secret；未创建额外 Token，仓库与日志没有凭据明文。API 回读确认 Secret 名称与 `*/5 * * * *` Cron。
 
-DNS 保持灰云 CNAME → `edge.example.net`。主 Route 指向正式 Worker；原型两个已有 stored 资源通过更具体的 `/r/<43 位 ID>*` Route 继续由原型提供，不复制到正式模型。切换前后分别读取不带和带查询参数的 URL，两个 59 字节对象均返回相同 SHA-256。原型 D1/R2 保留；正式管理和统计不包含原型对象。具体保留路径见[原型路由配置](../../prototypes/compat/wrangler.jsonc)。[Cloudflare Route 匹配规则](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior)说明更具体路径优先及尾部通配符与查询参数的关系。
+DNS 保持灰云 CNAME → `edge.example.net`。主 Route 指向正式 Worker；原型两个已有 stored 资源通过更具体的 `/r/<43 位 ID>*` Route 继续由原型提供，不复制到正式模型。切换前后分别读取不带和带查询参数的 URL，两个 59 字节对象均返回相同 SHA-256。原型 D1/R2 保留；正式管理和统计不包含原型对象。具体保留路径见原型路由配置（已删除，见历史版本 `0f79294`）。[Cloudflare Route 匹配规则](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior)说明更具体路径优先及尾部通配符与查询参数的关系。
 
-原型 SQL、原 Route 和对象摘要清单备份位于执行主机的 `<private-release-dir>/`，目录／文件仅当前用户可读。回退时先停正式写入并回读当前 Route ID，再将主 Route script 切回原型；Wrangler 会重建 ID，不能盲用切换前 ID。两套存储都保留，不以删数据回滚。
+发布当时原型 SQL、原 Route 和对象摘要清单备份位于执行主机的 `<private-release-dir>/`，目录／文件仅当前用户可读；这些原型专用备份随后随原型退役一并移除，正式验收报告仍保留。以下仅为当时回退方案，现已失效：回退时先停正式写入并回读当前 Route ID，再将主 Route script 切回原型；Wrangler 会重建 ID，不能盲用切换前 ID。两套存储都保留，不以删数据回滚。
 
 部署命令为 `npx wrangler deploy --config wrangler.cloud.json`。首次上传成功但 Route 被原型占用，Wrangler 明确拒绝接管；通过 Routes API 更新 script 后重跑成功，触发器与版本 ID 已回读。未关闭 Access，也未改成 workers.dev 或橙云。
 

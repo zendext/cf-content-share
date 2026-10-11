@@ -57,3 +57,9 @@ Documentation impact：更新部署文档、实现进度及本台账，解除已
 用户进一步授权复用当前 Token 配置统计 Secret、发布到 `share.example.com` 并 commit + push。正式主 Route 已接管，两个已有原型链接用更具体的 Route 保留；原型 D1/R2 和 DNS 未清空或改写。真实 AE 暴露 ORDER BY 使用源列的 422，主 Agent 通过源列／输出别名单变量对照确认根因，先增加失败回归，再修复四处排序，完整检查 70/70 通过后重新发布。
 
 最终版本 `00000000-0000-0000-0000-000000000001` 已通过 Desktop MCP、真实 PKCE 登录、显式及 401 自动刷新、refresh 撤销与 30 秒后 access 401、32 MiB 上传／摘要／Range／SVG、会话撤销、容量释放、五种统计视图与样本分页。本轮全部 5 次访问在验收启动后 121 秒可见。具体边界及备份见[云端验收](../research/2026-10-11-formal-cloud-acceptance.md)。
+
+## 原型退役与 Desktop 更名
+
+用户要求完全移除原型。专用 Worker、D1、R2 桶与对象、两条旧链接 Route 已删除；原型源码、依赖、构建缓存、本地实验目录及原型专用备份一并移除。保留 Git 历史及明确标记为历史的实验记录；正式资源、DNS、Zero Trust 团队和 Access 配置保留，只将 Access 显示名改为正式名称。
+
+旧 MCP 配置和 OAuth 凭据已删除，以 `cf-content-share` 重新添加并登录成功。用户重启 Desktop MCP 后，新工具命名空间加载，describe、storage.get、resource.list 调用成功。70 项完整回归通过。Documentation impact：同步当前状态、移除失效本地链接并标明历史记录的退役边界；文档链接、配置与 diff 检查通过。

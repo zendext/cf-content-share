@@ -4,7 +4,7 @@
 - 更新日期：2026-10-11。
 - 需求基线：[产品需求](../requirements/product.md)。
 
-本文描述首版实现契约；部署与实际验收范围见[正式服务云端验收](../research/2026-10-11-formal-cloud-acceptance.md)。当前落地范围见[正式服务实现进度](../plan/implementation.md)，文件恢复细节见[文件与恢复](../files.md)，可执行部署步骤见[部署与升级](../deployment.md)。[独立原型](../../prototypes/compat/README.md)的实际范围与[验证证据](../research/2026-10-11-rust-wasm-compatibility.md)单独记录。operation 名称、字段和存储布局是据已确认规则拟定的实现契约；正式 Schema、迁移及 `describe` 输出必须与本文对齐。Rust/MCP/OAuth 或平台能力验证失败时，先说明差异，不静默更换技术栈或降低需求。
+本文描述首版实现契约；部署与实际验收范围见[正式服务云端验收](../research/2026-10-11-formal-cloud-acceptance.md)。当前落地范围见[正式服务实现进度](../plan/implementation.md)，文件恢复细节见[文件与恢复](../files.md)，可执行部署步骤见[部署与升级](../deployment.md)。已退役原型的[历史验证证据](../research/2026-10-11-rust-wasm-compatibility.md)单独记录，原型代码和环境已删除。operation 名称、字段和存储布局是据已确认规则拟定的实现契约；正式 Schema、迁移及 `describe` 输出必须与本文对齐。Rust/MCP/OAuth 或平台能力验证失败时，先说明差异，不静默更换技术栈或降低需求。
 
 ## 1. 范围与技术取舍
 
@@ -363,7 +363,7 @@ Referer 保留原始值，不仅保存域名；缺失值表示未知。格式化
 
 ### 10.2 首次部署
 
-根目录已有正式 Cargo 工程、版本化迁移、初始化 CLI、本地 Wrangler 配置及生产配置生成入口，可执行命令见[部署与升级](../deployment.md)。该流程已完成正式资源初始化和部署；`prototypes/compat` 保持独立，不能直接对原型数据库应用正式迁移。
+根目录已有正式 Cargo 工程、版本化迁移、初始化 CLI、本地 Wrangler 配置及生产配置生成入口，可执行命令见[部署与升级](../deployment.md)。该流程已完成正式资源初始化和部署；原型已退役，后续构建与迁移只使用根目录正式工程。
 
 1. 配置 Rust/Wasm 工具链与 Wrangler，完成 Cloudflare 部署身份认证。
 2. 初始化入口按部署配置查找或创建 D1、KV、R2 和 Analytics Engine 所需资源，记录实际标识；重复运行复用资源，不覆盖或删除已有数据。

@@ -7,13 +7,13 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 const origin = 'https://s.example.test';
-const issuer = 'https://compat.cloudflareaccess.com';
+const issuer = 'https://service-test.cloudflareaccess.com';
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'compat-key', alg: 'RS256', use: 'sig' };
+const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'service-key', alg: 'RS256', use: 'sig' };
 function jwt(changes = {}, header = {}) {
   const now = Math.floor(Date.now() / 1000);
   const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const data = `${encode({ alg: 'RS256', kid: jwk.kid, ...header })}.${encode({ iss: issuer, aud: ['compat-aud'], sub: 'fixture-user', exp: now + 3600, nbf: now - 1, ...changes })}`;
+  const data = `${encode({ alg: 'RS256', kid: jwk.kid, ...header })}.${encode({ iss: issuer, aud: ['service-aud'], sub: 'fixture-user', exp: now + 3600, nbf: now - 1, ...changes })}`;
   return `${data}.${sign('RSA-SHA256', Buffer.from(data), privateKey).toString('base64url')}`;
 }
 let mf, db, kv, client;
@@ -49,7 +49,7 @@ before(async () => {
       { type: 'CompiledWasm', path: 'build/index_bg.wasm' },
     ],
     compatibilityDate: '2026-10-11',
-    bindings: { PUBLIC_ORIGIN: origin, ACCESS_ISSUER: issuer, ACCESS_AUD: 'compat-aud' },
+    bindings: { PUBLIC_ORIGIN: origin, ACCESS_ISSUER: issuer, ACCESS_AUD: 'service-aud' },
     d1Databases: ['DB'], kvNamespaces: ['MAPPINGS'], r2Buckets: ['FILES'],
     serviceBindings: { FAULTS: async req => {
       const path = new URL(req.url).pathname;

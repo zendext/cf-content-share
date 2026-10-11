@@ -2,11 +2,11 @@
 
 - 更新：2026-10-11。
 - 依据：[已确认技术设计](../design/technical.md)、[产品验收要求](../requirements/product.md)。
-- 当前阶段：短链、文件与容量、统计、初始化 CLI 已实现，已通过 70 项组合回归；正式 Worker 已部署到 `share.example.com`，两个已有原型测试链接通过独立 Route 保留。
+- 当前阶段：短链、文件与容量、统计、初始化 CLI 已实现，已通过 70 项组合回归；正式 Worker 已部署到 `share.example.com`，原型代码及环境已删除，Desktop MCP 已更名为 `cf-content-share`。
 
 ## 第一批：短链、权威状态与恢复
 
-根目录 `src/`、`migrations/`、`tests/` 是正式服务工程；`prototypes/compat/` 保留独立构建、数据模型和验证用途。正式服务复用原型验证过的 Rust/Wasm 依赖版本、MCP HTTP 传输和 Access JWT 验签方式。
+根目录 `src/`、`migrations/`、`tests/` 是正式服务工程；早期独立原型已完成验证并退役。正式服务复用原型验证过的 Rust/Wasm 依赖版本、MCP HTTP 传输和 Access JWT 验签方式。
 
 已实现：
 
@@ -53,4 +53,4 @@
 
 完整组合检查通过 Rust fmt、Wasm Clippy（零警告）、Wasm 构建和 70 项测试（失败 0）；新增文件统计回归覆盖真实缓存命中、206、原始 SVG、删除传播期间成功访问，以及采集失败不改变响应。Wrangler 已在既有本地 0001 数据库上成功应用 0002，重复执行无待执行迁移；包含 D1/KV/R2/AE 的完整本地配置 dry-run 通过。最终配置启动后，未认证 MCP 与上传均返回 401、缺失资源返回 404、scheduled 入口返回 200。用户补齐 KV 权限后，正式 D1、KV、私有 Standard R2 已创建；重复初始化复用原 ID，云端 0001／0002 迁移与重复检查通过，实际绑定配置 dry-run 通过。正式 Worker 和统计查询 Secret 已部署；本轮 MCP、OAuth、上传和统计验收结果见[正式云端记录](../research/2026-10-11-formal-cloud-acceptance.md)。Hermes、云端 R2 故障注入及跨节点 KV 传播仍是独立验证边界。
 
-线上原型是独立模型，43 位实验链接不能直接塞入正式 12 位资源表。此次主 Route 已切换到正式 Worker，两个原型 stored 对象采用更具体的旧 ID Route 保留；原型 D1/R2 未转换或清空，DNS 保持原优选入口。
+原型 Worker、D1、R2 及对象和两条旧链接 Route 已按用户要求删除，本地原型源码、依赖与构建缓存也已移除。两个旧测试链接返回 404。正式资源及优选入口保留；Access 应用显示名为 `cf-content-share MCP`，原有 audience 和 OAuth 配置不变。Desktop 移除旧配置和 OAuth 凭据后，以 `cf-content-share` 重新登录并重启 MCP；新命名空间下的 describe、storage.get 和 resource.list 实际调用通过。

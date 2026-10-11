@@ -1,6 +1,6 @@
 # 正式服务部署与升级
 
-本文对应根目录正式工程；资源初始化 CLI 已有模拟 Cloudflare API 回归，真实资源创建、正式 Worker 发布与云端验收应分别记录。原型的验证不能替代正式服务验收。全部命令从项目根目录运行；不要在 `prototypes/compat` 下执行正式迁移。
+本文对应根目录正式工程；资源初始化 CLI 已有模拟 Cloudflare API 回归，真实资源创建、正式 Worker 发布与云端验收应分别记录。原型的验证不能替代正式服务验收。全部命令从项目根目录运行；原型代码和环境已删除。
 
 ## 1. 配置和部署身份
 
@@ -50,21 +50,21 @@ Analytics Engine 没有这里需要调用的建库 API：CLI 只生成 `ANALYTIC
 
 ## 3. Access 与 Managed OAuth 一次性配置
 
-已有 `share.example.com/mcp` 应用应复用：团队 issuer 为 `https://example-team.cloudflareaccess.com`，audience 以 [原型配置](../prototypes/compat/wrangler.jsonc) 和控制台回读为准。不要为正式 Worker 再建一个覆盖相同路径的 Access 应用。本人邮箱不写入仓库；检查现有应用只有本人能通过，而不只是“所有 Cloudflare 账户成员”。
+已有 `share.example.com/mcp` 应用应复用：团队 issuer 为 `https://example-team.cloudflareaccess.com`，应用显示名为 `cf-content-share MCP`，audience 以本地 `deployment.local.json` 及控制台回读为准。不要为正式 Worker 再建一个覆盖相同路径的 Access 应用。本人邮箱不写入仓库；检查现有应用只有本人能通过，而不只是“所有 Cloudflare 账户成员”。
 
 新安装在 Cloudflare Dashboard 完成以下步骤：
 
 1. 在 Zero Trust → Integrations → Identity providers 查看已有 Cloudflare IdP；不存在时添加 Cloudflare，启用 **Restrict to account members** 并保存。[官方 IdP 步骤](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/cloudflare/)
 2. 在 Zero Trust → Access controls → Applications 添加 Self-hosted 应用，Public hostname 填实际分享主机，Path 填 `mcp`。应用只保护 `/mcp`，不配置整个域名的统一登录要求；检查没有父级应用误拦截 `/r/*`、上传路径或 OAuth 发现路径。[路径规则](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/)
 3. 配置唯一 Allow 策略，Include 使用 **Emails** 填本人完整邮箱。应用的登录方式只选择前一步的 Cloudflare IdP；不要添加 Everyone 或宽泛邮箱域 Include，也不要以 Bypass/Service Auth 代替个人 OAuth。
-4. 应用 Advanced settings 启用 **Managed OAuth**。按客户端需要开启 **Allow localhost clients** 与 **Allow loopback clients**，云端客户端只加入其实际 HTTPS redirect URI。当前原型使用 15 分钟 access token、24 小时 grant session；保留已有设置，不假设新客户端能自动刷新。[Managed OAuth 设置](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/)
+4. 应用 Advanced settings 启用 **Managed OAuth**。按客户端需要开启 **Allow localhost clients** 与 **Allow loopback clients**，云端客户端只加入其实际 HTTPS redirect URI。当前应用使用 15 分钟 access token、24 小时 grant session；保留已有设置，不假设新客户端能自动刷新。[Managed OAuth 设置](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/)
 5. 从应用详情复制 **Application Audience (AUD)**，结合团队 issuer 写回部署输入；重新生成配置。Worker 会验证 `Cf-Access-Jwt-Assertion` 的签名、issuer 和 audience。不要把 OAuth opaque token 当作 Access JWT，也不要提取客户端私有凭据代替上传 Token。
 
 验收时用实际 MCP 客户端连接 `https://<host>/mcp`：未登录应返回 401 和 OAuth `WWW-Authenticate`，客户端跟随实际发现地址完成注册、浏览器登录、回调和工具调用；本人能进入，其他邮箱被拒绝。分别验证刷新、撤销和每个实际客户端，不能用一次登录推断它们已通过。匿名 `/r/<id>` 可访问；无应用 Token 的上传请求被 Worker 拒绝，不能跳到 Access 登录页。
 
 ## 4. 迁移、Secrets 与发布
 
-下面操作会修改云端状态，应在核对计划、数据库名和目标域名后单独执行。首次正式安装使用新正式资源；不要对原型数据库套用根目录迁移。
+下面操作会修改云端状态，应在核对计划、数据库名和目标域名后单独执行。首次安装使用初始化入口生成的正式资源绑定。
 
 ```sh
 npm run test:deployment
@@ -97,15 +97,11 @@ npx wrangler deploy --config wrangler.cloud.json
 
 首次 `secret put` 若目标 Worker 不存在，Wrangler 会要求创建占位 Worker；先核对名字，再完成正式 deploy。记录 Worker version ID、Git commit 和迁移列表。`SELECT 1` 通过只证明 SQL 查询身份可用；首次公开访问产生事件之后，还需通过 MCP 统计查询核对 dataset、事件和时区。不要把 Secret 写入 `vars`、输入配置、命令参数或日志。
 
-Route 固定生成为 `{ "pattern": "<host>/*", "zone_name": "<zone>" }`，不使用 `custom_domain`。DNS 独立维护。当前 `share.example.com` 是灰云 CNAME → `edge.example.net`，主 Route 指向 `cf-content-share`，两个旧测试链接的更具体 Route 指向 `cf-content-share-compat`；初始化不得替换、橙云化或删除此 DNS。现有组合是[实验记录](research/2026-10-11-rust-wasm-compatibility.md)中的实测状态；[官方 Route 文档](https://developers.cloudflare.com/workers/configuration/routing/routes/)仍要求 proxied DNS，不能把当前实测推广为平台长期保证。新域名按所选入口方案单独验收。
+Route 固定生成为 `{ "pattern": "<host>/*", "zone_name": "<zone>" }`，不使用 `custom_domain`。DNS 独立维护。当前 `share.example.com` 是灰云 CNAME → `edge.example.net`，唯一主 Route 指向 `cf-content-share`，原型旧链接 Route 已移除；初始化不得替换、橙云化或删除此 DNS。现有组合是[实验记录](research/2026-10-11-rust-wasm-compatibility.md)中的实测状态；[官方 Route 文档](https://developers.cloudflare.com/workers/configuration/routing/routes/)仍要求 proxied DNS，不能把当前实测推广为平台长期保证。新域名按所选入口方案单独验收。
 
-## 5. 原型切换和正式版本升级
+## 5. 正式版本升级
 
-**当前原型不是正式模型的升级起点。** 原型 D1/R2 都叫 `cf-content-share-compat`，原型链接使用 43 位 ID；正式模型使用 12 位 ID。不能把正式 Worker 直接绑定原型库，也不能只换 Route 就声称旧链接保留。`public`、`siyuan` 等其他桶与本项目无关。
-
-2026-10-11 首次切换采用独立正式 D1/KV/R2，并保留原型：先导出原型 D1、回读两个已存储对象及摘要，再为两个完整 43 位 ID 分别配置 `share.example.com/r/<id>*` → `cf-content-share-compat`，最后把 `share.example.com/*` 切换到 `cf-content-share`。尾部 `*` 保留查询参数访问；更具体路径优先，原型仍对完整 ID 验证，其他后缀返回 404。原型配置中的 routes 已同步，后续发布原型不会夺回主 Route。两个旧链接切换后，包括带查询参数访问，均返回原摘要；新资源完全使用正式模型，旧资源不纳入正式资源列表／容量／统计。
-
-这是一份有限旧链接清单，不是通用数据迁移器。原型主 MCP 和上传入口已由正式服务接管，原型库与对象保留；不得将原型迁移套用到正式库。若需回退本次路由切换，先停正式写入，回读当前主 Route ID，再用 Workers Routes API 将其 script 改为 `cf-content-share-compat`；保留两套数据库和对象，不删除正式数据。Wrangler 可能重建 Route ID，不能沿用旧快照中的 ID。正式 v1 之后的版本升级才适用下面的同模型流程。
+原型已经完全退役：专用 Worker、D1、R2 桶及对象、两个旧链接 Route 与本地代码均已删除，旧测试链接返回 404。复用的 Zero Trust 团队、Access 应用、正式 D1/KV/R2/AE 和优选 DNS 保留。后续升级及回滚仅适用于正式模型，不再提供切回原型的操作。
 
 升级前暂停业务写入及可能改变状态的 Cron，确保没有进行中的上传／恢复任务；记录配置、Git commit、当前 Worker version、D1 migration 列表和 R2 对象清单。用当前正式绑定导出 D1 SQL，输出保存在仓库外：
 
@@ -138,8 +134,16 @@ npx wrangler deploy --config wrangler.cloud.json
 - D1 `cf-content-share`、KV `cf-content-share-mappings`、R2 `cf-content-share` 已创建；再次执行 `--apply` 全部返回 `reuse`，资源 ID 不变。
 - R2 回读确认 Standard、`r2.dev` 禁用且无自定义域名。正式 D1 应用 `0001_resources.sql`、`0002_files.sql` 后，再次迁移显示无待执行项；初始化时 SQL 回读确认两项迁移、资源数为 0，已发布／预留／清理字节均为 0；后续验收保留删除墓碑与操作历史。
 - `deployment.local.json` 与生成的 `wrangler.cloud.json` 均为 `0600` 且被 Git 忽略；包含实际资源绑定的 `deploy --dry-run` 退出 0。AE binding 的 dataset 为 `cf_content_share`；部署后真实访问已产生事件，五类统计查询和样本分页均已通过云端验收。
-- 现有 Access 应用仍为 `share.example.com/mcp`，audience 与配置一致；主 Route 已切换到 `cf-content-share`，旧测试链接保留独立 Route；灰云 CNAME 仍指向 `edge.example.net`。
+- 现有 Access 应用仍为 `share.example.com/mcp`，audience 与配置一致；主 Route 已切换到 `cf-content-share`，旧测试链接 Route 已移除；灰云 CNAME 仍指向 `edge.example.net`。
 
 最初 KV 读取的 HTTP 401 / 10000 已解除。正式 Worker 已发布，`ANALYTICS_API_TOKEN` 已按用户要求配置；主 Route、两个旧链接 Route、Secret 名称与五分钟 Cron 已通过 API 回读。发布版本、实际验收结果及剩余边界见[正式服务云端验收](research/2026-10-11-formal-cloud-acceptance.md)。
 
 CLI API 契约依据：[D1 数据库 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/)、[KV namespace API](https://developers.cloudflare.com/api/resources/kv/subresources/namespaces/)、[R2 桶列表及 cursor](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/list/)、[R2 桶属性和 storage_class](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/get/)、[R2 managed domain](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/managed/methods/list/)、[R2 custom domains](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/custom/methods/list/)。
+
+## 7. Codex Desktop 连接
+
+连接名称为 `cf-content-share`，URL 为 `https://share.example.com/mcp`。本机已用 `codex mcp logout cf-content-share-compat` 清除旧凭据、remove 删除旧定义，再以新名称 add 并完成 OAuth 登录；Desktop 重启 MCP 后已加载 `mcp__cf_content_share`。
+
+新安装可运行 `codex mcp add cf-content-share --url https://share.example.com/mcp`；OAuth 需要时使用 `codex mcp login cf-content-share`。CLI 与 Desktop 共用配置；更改后在 Desktop Settings → MCP servers 点击 Restart，再调用 describe 查看目录。[官方 MCP 配置说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
+
+2026-10-11 退役后验证：云端 Worker/D1/R2/KV/Route 列表只保留正式资源，没有原型资源；两个旧链接均为 404。Desktop 新名称下 describe 返回 14 项 operation，invoke(storage.get) 返回全零容量，invoke(resource.list) 成功返回空列表。删除原型及更名测试夹具后完整检查 70 项通过、0 失败。正式服务业务代码及部署版本未改变。

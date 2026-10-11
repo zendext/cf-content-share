@@ -1,11 +1,11 @@
 # Rust/Wasm、MCP、Access JWT 与流式 R2 兼容性实验
 
-- 状态：本地验证通过；真实 Cloudflare/OAuth 联调受环境阻塞，整体结论仍为部分验证。
+- 状态：历史实验记录。2026-10-11 正式服务接管后，原型代码、云端资源与本地临时文件已按用户要求删除；下文按发生顺序保留当时观察，不是当前部署指引。
 - 日期：2026-10-11。
 - 执行者：Codex。
-- 基线：`18a98d6a2ad0f3ce52f022f9c3c1a322a9b5c23d`，实验实现位于当前工作区。
+- 基线：`18a98d6a2ad0f3ce52f022f9c3c1a322a9b5c23d`，实验实现可在 Git 历史中查阅（删除前版本 `0f79294`）。
 - 设计：[技术设计 11.1](../design/technical.md#111-先完成最小兼容性原型)。
-- 产物：[原型代码及运行说明](../../prototypes/compat/README.md)、[集成测试](../../prototypes/compat/tests/compat.test.mjs)。
+- 产物：原型代码及运行说明（已删除，见历史版本 `0f79294`）、集成测试（已删除，见历史版本 `0f79294`）。
 
 ## 问题与判定标准
 
@@ -41,7 +41,7 @@
 
 ## 命令与观察
 
-从仓库根目录进入 `prototypes/compat`，依照[运行说明](../../prototypes/compat/README.md#运行与验证)准备工具链后执行：
+从仓库根目录进入 `prototypes/compat`，依照运行说明（已删除，见历史版本 `0f79294`）准备工具链后执行：
 
 ```sh
 npm run check
@@ -110,7 +110,7 @@ npx wrangler r2 bucket domain list cf-content-share-compat
 
 再次执行远端迁移显示无待应用迁移；SQL 回读确认 `upload_sessions`、`uploads` 两张表及迁移登记，业务表均为 0 行。该证据确认资源初始化与迁移，不代表云端 Worker 上传链路已运行。
 
-当时的剩余阻塞是 Zero Trust 团队首次初始化、单人准入邮箱及 Access 应用 issuer/AUD，尚未部署 Worker。随后完成情况见下一节。完整配置与准备清单见[云端联调准备](../../prototypes/compat/README.md#云端联调准备)。
+当时的剩余阻塞是 Zero Trust 团队首次初始化、单人准入邮箱及 Access 应用 issuer/AUD，尚未部署 Worker。随后完成情况见下一节。完整配置与准备清单见云端联调准备（已删除，见历史版本 `0f79294`）。
 
 ### Zero Trust API 初始化与域名部署
 

@@ -73,6 +73,6 @@ node --test tests/r2-fencing.test.mjs
 
 本地 R2 实验 `tests/r2-fencing.test.mjs`：一个两字节 FixedLengthStream 先交付一字节，另一请求在同 key 建立屏障，原流再提交剩余字节。实测原 put 返回 null，屏障保持不变。API 的条件写入与强一致性依据见 [R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/) 与 [一致性说明](https://developers.cloudflare.com/r2/reference/consistency/)。该实验仅证明本地 workerd 行为，不能替代云端并发与跨节点验证。
 
-基础服务已部署，本次期限与 KV 规则仍待云端发布验收。历史真实 32 MiB 上传、摘要回读、SVG、Range、会话撤销和文件统计的云端结果见[正式验收记录](research/2026-10-11-formal-cloud-acceptance.md)。未验证项仍包括 Hermes、跨节点 KV 传播、浏览器长期复用和云端 R2 并发故障恢复；本地故障证据不代替这些范围。
+本次期限与KV规则已部署并激活；真实1 MiB流式上传与幂等重发、30秒SVG到期GET/HEAD/Range拒绝、永久空文件验证见[本次云端记录](research/2026-10-12-expiration-cloud-acceptance.md)，文件自然Cron清理及测试资源收尾均已完成。历史真实 32 MiB 上传、摘要回读、SVG、Range、会话撤销和文件统计的云端结果见[正式验收记录](research/2026-10-11-formal-cloud-acceptance.md)。未验证项仍包括 Hermes、跨节点 KV 传播、浏览器长期复用和云端 R2 并发故障恢复；本地故障证据不代替这些范围。
 
 2026-10-11 本地验证记录：`npm run check` 退出码 0，38 项测试通过、0 失败（37 项正式服务测试和 1 项 R2 并发原语实验）；Rust fmt 和 wasm32 clippy 未报告警告。160 MiB 流式测试记录的 Wasm 内存为 1,507,328 字节。`npm run dry-run` 只检查本地构建及绑定，不上传 Worker 或创建云端资源。`git diff --check` 通过。

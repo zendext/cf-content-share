@@ -1,10 +1,10 @@
 # cf-content-share 首版技术设计
 
-- 状态：正式工程已实现短链、文件与容量恢复、统计、资源初始化和 Agent Skill；本轮增加资源有效期、一次性激活与 KV 24 小时兜底。基础服务已部署，本轮完整本地回归已通过，云端发布验收尚待完成；证据边界见[实现进度](../plan/implementation.md)。
+- 状态：正式工程已实现短链、文件与容量恢复、统计、资源初始化和 Agent Skill；本轮增加资源有效期、一次性激活与 KV 24 小时兜底。本轮功能已部署并激活，完整本地回归及本轮云端验收已完成；证据边界见[实现进度](../plan/implementation.md)。
 - 更新日期：2026-10-12。
 - 需求基线：[产品需求](../requirements/product.md)。
 
-本次变更状态：2026-10-12 代码、0003 Schema、激活脚本与上传 Skill 已实现下述有效期契约。Schema 迁移不会启动旧资源倒计时，须在兼容 Worker 发布后显式激活；尚无本次实际 T0。旧版本云端验收不能证明本次新规则已生效。
+本次变更状态：2026-10-12 代码、0003 Schema、激活脚本与上传 Skill 已实现下述有效期契约。Schema 迁移不会启动旧资源倒计时，须在兼容 Worker 发布后显式激活；本次实际 T0 为2026-10-12 02:29:02 UTC，结果及边界见[有效期云端验收](../research/2026-10-12-expiration-cloud-acceptance.md)。旧版本云端验收不能替代本次证据。
 
 本文描述首版实现契约；部署与实际验收范围见[正式服务云端验收](../research/2026-10-11-formal-cloud-acceptance.md)。当前落地范围见[正式服务实现进度](../plan/implementation.md)，文件恢复细节见[文件与恢复](../files.md)，可执行部署步骤见[部署与升级](../deployment.md)。已退役原型的[历史验证证据](../research/2026-10-11-rust-wasm-compatibility.md)单独记录，原型代码和环境已删除。operation 名称、字段和存储布局是据已确认规则拟定的实现契约；正式 Schema、迁移及 `describe` 输出必须与本文对齐。Rust/MCP/OAuth 或平台能力验证失败时，先说明差异，不静默更换技术栈或降低需求。
 
@@ -158,7 +158,7 @@ Streamable HTTP 支持 `2025-11-25` 和 `2025-06-18`。`initialize.params.protoc
 - MCP 结果使用结构化内容，并为客户端兼容提供等价文本 JSON。协议错误、业务错误、部分完成分别表达；部分完成不能只返回 `success: true`。
 - 创建、上传、详情和列表返回 `retention_seconds`、`published_at`、`expires_at`、`accessible` 和 `unavailable_reason`（`pending`、`expired`、`deleted` 或 `null`）；默认列表只包括未到期的已发布资源，按 ID 仍可查失效资源。Cron 尚未处理的到期记录不能在列表中继续作为有效资源显示。
 - Agent 将“再保留 30 天”或“原期限上延长 30 天”转换为明确的 `expires_at` 后提交并保存请求；重复提交同一时间不得变成新的相对续期。普通元数据、目标 URL 修改与访问均不改变期限。
-- `describe`、上传 metadata Schema、上传脚本及 Skill 已同步新参数和结果；完整本地回归已通过，新版本云端上传验证仍待执行，不能把本地结果等同于客户端已在生产验收。
+- `describe`、上传 metadata Schema、上传脚本及 Skill 已同步新参数和结果；完整本地回归及本轮实际云端上传已通过；客户端与清理收尾的验证范围见本次云端记录，不扩大为全部客户端已验收。
 
 例如删除已受理但清理失败时，业务结果可以为：
 
@@ -425,7 +425,7 @@ Rust 使用 workers-rs / worker-build 生成 Wasm 和平台入口，由 Wrangler
 
 ### 10.4 有效期功能的一次性激活
 
-`T0` 是本次有效期功能首次部署生效的统一 UTC 时刻，必须在发布时持久记录；不是旧资源创建时间、文档更新时间，也不是每次 Worker 重新部署的时间。`0003_expiration.sql` 只准备字段、索引及触发器，并补充旧删除原因；应用 Schema 本身不会产生 `T0`。本轮云端激活尚未执行，不能以文档日期代替实际 `T0`。
+`T0` 是本次有效期功能首次部署生效的统一 UTC 时刻，必须在发布时持久记录；不是旧资源创建时间、文档更新时间，也不是每次 Worker 重新部署的时间。`0003_expiration.sql` 只准备字段、索引及触发器，并补充旧删除原因；应用 Schema 本身不会产生 `T0`。本轮实际激活时间与迁移数量见[有效期云端验收](../research/2026-10-12-expiration-cloud-acceptance.md)，不能以文档日期代替实际 `T0`。
 
 1. 用临时全路径 503 维护入口阻断业务，scheduled 暂不执行；耗尽旧在途执行后先备份，再应用加法 Schema。随后发布加载新正式 bundle、仍阻断 fetch/scheduled 的兼容维护入口；不在新 Worker 成功发布前激活。临时入口和私有配置保存在仓库外，不增加产品持久开关或认证旁路。
 2. `scripts/activate-expiration.mjs` 默认只读预览，显式 `--apply` 执行单条 `INSERT OR IGNORE`。`expiration_activation` 单例由 D1 固定 `activated_at=T0`；插入触发器原子记录 `migrated_count` 并为旧的未删除资源设定 `expires_at = T0 + 2592000`，包含旧待发布资源。已删除资源不恢复，ID、操作映射、文件 key 和公开 URL 不变。
@@ -469,4 +469,4 @@ Rust 或认证兼容性不满足时，记录具体失败及证据，再确认调
 
 本地测试证明逻辑与可控故障处理；真实 Cloudflare 环境验证 Managed OAuth、跨节点 KV、浏览器缓存和 Analytics Engine 可见性。测试报告必须区分程序提交次数与平台采样后的统计估算，也要区分配置检查、原型验证和完整服务验收。
 
-本次已增加真实 workerd 的期限、迁移、旧操作重试、KV 绝对截止及并发回归；可控时间覆盖 24 小时和 30 天边界，激活脚本另有只读、重入与错误脱敏检查。完整本地检查100项通过，范围与限制见[实现进度](../plan/implementation.md)；云端仍须验证激活、旧链接、真实 MCP 与定时清理，文档校验不代表这些验收已经通过。
+本次已增加真实 workerd 的期限、迁移、旧操作重试、KV 绝对截止及并发回归；可控时间覆盖 24 小时和 30 天边界，激活脚本另有只读、重入与错误脱敏检查。完整本地检查101项通过，范围与限制见[实现进度](../plan/implementation.md)；本轮云端已验证激活、旧链接、真实MCP和URL自然到期清理，文件自然清理及测试资源收尾也已完成，证据边界见[云端记录](../research/2026-10-12-expiration-cloud-acceptance.md)。

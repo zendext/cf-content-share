@@ -252,6 +252,8 @@ npx wrangler deploy --config "$release_dir/wrangler.production.json"
 
 ## 6. 验收和可观测性
 
+2026-10-12 本次0003迁移、兼容发布及激活已在正式环境执行：实际T0为02:29:02 UTC；最终小修复、文件自然Cron清理及容量核对均已完成。首次D1迁移失败、回滚确认、修正及已验证范围见[有效期云端验收](research/2026-10-12-expiration-cloud-acceptance.md)。
+
 `npm run test:deployment` 使用内存 API 和临时目录验证计划无写入、首次创建、分页、重入、部分失败恢复、旧 ID 保护、私有桶校验、凭据脱敏和路径生成。它不证明真实账户权限、云端资源创建、Access 登录、Route 切换或 AE 数据可见性。`deploy --dry-run` 只证明配置可解析和构建包可生成，也不会发布。
 
 每次云端验收至少记录真实 MCP 工具调用、匿名旧／新分享访问、有效及无效上传 Token、文件下载摘要、删除与恢复任务、统计事件及默认时区、Cron 触发和告警状态。本次有效期功能还需记录实际T0及迁移数量、重复激活不变、短期测试资源GET/HEAD/Range到点拒绝和定时清理；旧版验收记录不能替代这些结果。结合 Workers Logs/Metrics、D1/KV/R2/AE 用量观察失败和费用；日志不得包含 Token 或文件正文。

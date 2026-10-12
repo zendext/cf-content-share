@@ -70,7 +70,7 @@ PATH="$HOME/.cargo/bin:$PATH" CARGO_TARGET_DIR="$PWD/target" npm test
 2026-10-11 对真实 Analytics Engine endpoint 执行了只读合成常量 SQL，不访问用户数据集、不写入事件。可用本地查询凭据复核：
 
 ```sh
-CLOUDFLARE_ACCOUNT_ID=<account-id> node tests/stats-cloud-probe.mjs
+CLOUDFLARE_ACCOUNT_ID=<account-id> node tests/stats-cloud-probe.mts
 ```
 
 脚本从本地 `CLOUDFLARE_API_TOKEN` 读取凭据，不打印凭据或上游错误正文。它证明实际 SQL 支持 UTC 秒转换、时区分桶与 UTF-8 hex：纽约 2026-03-08 春季跳时、2026-11-01 秋季重复小时，以及上海 2026-10-10 16:30Z 的本地次日边界均符合预期。该证据不证明数据集读取、云端事件投递完整性或 5 分钟可见性；后者仍需正式绑定部署后的端到端验收。

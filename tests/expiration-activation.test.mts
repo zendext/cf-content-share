@@ -1,11 +1,12 @@
-import { test } from 'node:test';
+import type { CloudFetch } from '../scripts/init-cloud.mts';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { activateExpiration, activationSql } from '../scripts/activate-expiration.mjs';
+import { activateExpiration, activationSql } from '../scripts/activate-expiration.mts';
 
-async function fixture(t) {
+async function fixture(t: TestContext) {
  const directory=await mkdtemp(path.join(tmpdir(),'expiration-activation-'));
  t.after(()=>rm(directory,{recursive:true,force:true}));
  const configFile=path.join(directory,'wrangler.jsonc');
@@ -14,10 +15,10 @@ async function fixture(t) {
  return {configFile,token:'secret-must-not-leak'};
 }
 test('expiration activation previews read-only and applies once with a stable database T0',async t=>{
- const config=await fixture(t);let activated_at=null;const queries=[];
- const fetch=async(url,init)=>{
+ const config=await fixture(t);let activated_at: number | null = null;const queries: string[] = [];
+ const fetch: CloudFetch = async(url,init)=>{
   assert(url.endsWith('/query'));assert.equal(init.headers.authorization,'Bearer secret-must-not-leak');
-  const {sql}=JSON.parse(init.body);queries.push(sql);
+  const {sql}=JSON.parse(init.body!);queries.push(sql);
   if(sql===activationSql)activated_at??=1791763200;
   return Response.json({success:true,result:[{success:true,results:[{activated_at,migrated_count:activated_at===null?null:3,legacy_resources:3,new_resources:2}]}]});
  };
@@ -28,7 +29,7 @@ test('expiration activation previews read-only and applies once with a stable da
 test('expiration activation errors redact network and API bodies and reject invalid environments',async t=>{
  const config=await fixture(t);
  for(const fetch of [async()=>{throw new Error('secret-must-not-leak');},async()=>new Response('secret-must-not-leak',{status:502}),async()=>Response.json({success:false,errors:[{message:'secret-must-not-leak'}]},{status:403})]){
-  await assert.rejects(activateExpiration({...config,fetch}),error=>!error.message.includes('secret-must-not-leak'));
+  await assert.rejects(activateExpiration({...config,fetch}),error=>error instanceof Error && !error.message.includes('secret-must-not-leak'));
  }
  await assert.rejects(activateExpiration({...config,environment:'missing',fetch:()=>assert.fail('must not request')}),/环境/);
 });

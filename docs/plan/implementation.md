@@ -105,3 +105,12 @@ Documentation impact：同步README、需求与设计状态、文件与统计契
 send 的输出只描述传输，Agent 在实际 HTTP 尝试后查询原 `operation_id`，按 MCP 权威结果给出分享地址或恢复动作。已有 v1 state 保持可发送，不改写保存的 metadata；新 prepare 使用 v2 state 保存传输契约。此次不增加迁移，不重新初始化有效期，也不更改既有资源绑定。前面 Agent 入口和有效期章节中的旧脚本结果枚举属于对应历史版本，其当前接口以[文件与恢复](../files.md#通用本地上传器)为准。
 
 Documentation impact：更新 Skill、README、文件契约、技术设计及部署路径；旧版 Skill 与脚本需一次性同步，兼容协议内后续业务字段变化由服务发现承载。最终代码冻结后，父级执行 `npm run check`，严格 TypeScript 无输出类型检查、Rust fmt、Wasm Clippy 和 Rust/Wasm 构建全部通过，107 项测试全部通过；正式配置 production dry-run 退出 0。代码 `819c372` 已部署，生产 API 回读新版本承接 100% 流量；真人 OAuth、线上发现一致性、独立安装目录执行、默认／自定义／永久上传、MCP 权威结果、正文读取、非法业务参数拒绝和 v1 state 幂等重放均已验收。本轮三份测试资源已删除、公开链接均 404，删除及 R2 清理操作完成；会话撤销后上传 401，原会话保留。最终 1 条 published、20 条 deleted，45 个操作全部 completed；容量恢复 published=12134 字节、reserved=cleanup=0，原图、T0、绑定及迁移记录均不变。OAuth 验收客户端已退出，本轮会话凭据文件已移除，安装文件与冻结源码摘要一致。PR #4 当前仍为草稿、尚未合并。完整观察、HEAD 编码协商导致的首轮断言失败和未验证边界见[通用上传器云端记录](../research/2026-10-12-generic-upload-cloud-acceptance.md)。
+
+
+## 全量 TypeScript 源码迁移（Issue #5，2026-10-12）
+
+将剩余部署／有效期 CLI、统计探针、测试和 Worker 夹具从 `.mjs` 迁移为 `.mts`。Node.js 24.12+ 直接执行脚本；Node 与 workerd 使用独立的严格类型检查配置，平台类型复用与现有 Wrangler 匹配的 Cloudflare 类型包。Workerd 夹具使用 Node 原生类型擦除，在内存中加载；R2 竞争测试的内联 Worker 也提取为受检查的 TypeScript 夹具。保留既有业务行为、错误脱敏及故障注入断言。
+
+新增源码约束回归检查，覆盖 Git 跟踪和未忽略的新文件，禁止维护 `.js`、`.mjs`、`.cjs`、`.jsx` 源文件；不使用 Linguist 覆盖来隐藏语言。`build/index.js` 是 Rust/Wasm 构建产物，继续由工具链生成并忽略，不属于维护源码。GitHub 默认分支语言统计需在本轮合并后刷新。
+
+Documentation impact：同步 README 的开发检查说明及部署、有效期、R2 实验、统计探针命令；历史验收记录保留当时命令。Node 与 workerd 严格类型检查、Rust fmt／Clippy／Wasm 构建通过，108 项测试全部通过（失败、取消、跳过均为 0）；其中源码约束用例迁移前准确列出 11 个 JavaScript 文件，迁移后通过。两个 CLI 的原生执行 help 与 73 个本地文档链接已核对，Git 跟踪的 JavaScript 文件为 0，TypeScript 文件为 17。dry-run 使用与完整检查相同的 Rust 1.97.1 工具链后通过；首次未指定工具链的尝试被宿主旧 Rust 1.90 拒绝，未修改依赖或发布云端。本轮不改变 Worker 业务代码，不执行云端迁移或重新部署。

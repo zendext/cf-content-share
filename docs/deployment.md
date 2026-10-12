@@ -4,9 +4,9 @@
 
 ## 0. Agent 按提示词部署
 
-README 的[安装提示词](../README.md#让-agent-安装)授权 Agent 执行本项目部署。它使用现有 CLI 与 Cloudflare API 组合完成；`init-cloud.mjs` 自身不会创建 DNS 或 Access。
+README 的[安装提示词](../README.md#让-agent-安装)授权 Agent 执行本项目部署。它使用现有 CLI 与 Cloudflare API 组合完成；`init-cloud.mts` 自身不会创建 DNS 或 Access。
 
-1. 从用户提供的账户 ID、域名、准入邮箱、团队名和私有 Token 文件开始。用 `scripts/init-cloud.mjs` 的 `readToken` 读取凭据，在进程内通过 HTTPS Authorization header 调用固定的 Cloudflare API；不要把 Token 放进 shell 参数、打印原始响应或读取 Agent 的 OAuth 凭据文件。先回读目标 Zone、DNS、Workers、Access 组织／IdP／应用与资源列表，确认归属；403 不能当作资源不存在。
+1. 从用户提供的账户 ID、域名、准入邮箱、团队名和私有 Token 文件开始。用 `scripts/init-cloud.mts` 的 `readToken` 读取凭据，在进程内通过 HTTPS Authorization header 调用固定的 Cloudflare API；不要把 Token 放进 shell 参数、打印原始响应或读取 Agent 的 OAuth 凭据文件。先回读目标 Zone、DNS、Workers、Access 组织／IdP／应用与资源列表，确认归属；403 不能当作资源不存在。
 2. 复用现有 Zero Trust 组织。不存在时按用户提供的团队名创建；已有组织不得更名或重建。复用合适的 Cloudflare IdP，缺失时创建 `type=cloudflare` 且 `restrict_to_account_members=true` 的 IdP。本人准入邮箱须属于该 Cloudflare 账户；不符合时让用户提供可用身份，不自动放宽策略。按第 3 节配置仅保护 `/mcp` 的 self-hosted 应用、本人邮箱 Allow、Managed OAuth 和本地回调，读取 issuer 与 AUD。遇到重叠应用或不匹配的准入策略，先报告冲突，不覆盖其他应用。
 3. 新分享子域名默认使用 proxied AAAA `100::` 与本项目生成的 `host/*` Worker Route。DNS 不存在时创建；若已有兼容记录则复用。已有不同目标、其他 Worker Route 或 Custom Domain 时报告冲突，不直接接管。公开 `/r/*`、`/upload` 与 OAuth 发现路径不能被整站 Access 登录规则拦截。
 4. 检查并安装缺少的工具链与依赖，按下方步骤生成私有配置；先执行初始化只读计划，核对后 `--apply`。运行检查、dry-run 和 D1 迁移，按提示词选择单 Token 或用户另行提供的只读统计 Token，写入 `ANALYTICS_API_TOKEN` 后发布。不要创建新 API Token、购买套餐或重置现有数据；平台要求本人开通服务时报告具体缺项。
@@ -102,8 +102,8 @@ npx wrangler deploy --dry-run --config wrangler.cloud.json
 npx wrangler d1 migrations apply DB --remote --config wrangler.cloud.json
 printf '%s' "$CLOUDFLARE_API_TOKEN" | npx wrangler secret put ANALYTICS_API_TOKEN --config wrangler.cloud.json
 npx wrangler deploy --config wrangler.cloud.json
-node scripts/activate-expiration.mjs --config wrangler.cloud.json
-node scripts/activate-expiration.mjs --config wrangler.cloud.json --apply
+node scripts/activate-expiration.mts --config wrangler.cloud.json
+node scripts/activate-expiration.mts --config wrangler.cloud.json --apply
 unset CLOUDFLARE_API_TOKEN
 ```
 
@@ -126,7 +126,7 @@ AE 查询使用 Worker Secret `ANALYTICS_API_TOKEN`。建议为新安装使用�
 ```sh
 node --input-type=module <<'JS'
 import { readFile } from 'node:fs/promises';
-import { readToken } from './scripts/init-cloud.mjs';
+import { readToken } from './scripts/init-cloud.mts';
 const { account_id } = JSON.parse(await readFile('deployment.local.json', 'utf8'));
 const token = await readToken('/private/analytics-api-token');
 const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account_id}/analytics_engine/sql`, {
@@ -161,14 +161,14 @@ Route 固定生成为 `{ "pattern": "<host>/*", "zone_name": "<zone>" }`，不�
 在仓库外准备两个临时入口和三份私有Wrangler配置，不作为产品持久开关提交。三份配置保持相同name/account/Route/bindings/vars/Cron，仅main不同；把main、migrations_dir解析成绝对路径，并移除build命令，避免分阶段发布时重新构建。原生成配置不因此改写，也不要用init --apply覆盖手工发布配置。
 
 - `wrangler.production.json`：main指向最终 `build/index.js`。
-- `wrangler.maintenance-only.json`：main指向静态 `maintenance-only.mjs`。
-- `wrangler.compatible-maintenance.json`：main指向加载同一最终bundle的 `compatible-maintenance.mjs`。
+- `wrangler.maintenance-only.json`：main指向静态 `maintenance-only.mts`。
+- `wrangler.compatible-maintenance.json`：main指向加载同一最终bundle的 `compatible-maintenance.mts`。
 
 静态入口：
 
-```js
+```ts
 export default {
-  fetch(request) {
+  fetch(request: Request) {
     return new Response(request.method === 'HEAD' ? null : 'Service temporarily unavailable.\n', {
       status: 503,
       headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '60' },
@@ -180,11 +180,11 @@ export default {
 
 兼容维护入口用真实构建路径替换下例路径，保留构建的其他命名导出。它验证并打包新Wasm，fetch和scheduled仍不进入业务：
 
-```js
+```ts
 import Worker from '/absolute/path/to/cf-content-share/build/index.js';
 export * from '/absolute/path/to/cf-content-share/build/index.js';
 export default class extends Worker {
-  fetch(request) {
+  fetch(request: Request) {
     return new Response(request.method === 'HEAD' ? null : 'Service temporarily unavailable.\n', {
       status: 503,
       headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '60' },
@@ -219,7 +219,7 @@ npx wrangler d1 time-travel info DB --config "$release_dir/wrangler.production.j
 npx wrangler d1 export DB --remote --config "$release_dir/wrangler.production.json" --output "$release_dir/backup-before-upgrade.sql"
 sha256sum "$release_dir/backup-before-upgrade.sql" > "$release_dir/backup-before-upgrade.sha256"
 npx wrangler d1 migrations apply DB --remote --config "$release_dir/wrangler.production.json"
-node scripts/activate-expiration.mjs --config "$release_dir/wrangler.production.json"
+node scripts/activate-expiration.mts --config "$release_dir/wrangler.production.json"
 ```
 
 首次预览应为`activated=false`；0003不写激活记录，也不为旧未删除行提前赋到期时间。若已经激活，核对原T0，不删除记录重新计时。D1导出可能暂时阻断数据库查询，因此在维护窗口执行。[导出API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/)
@@ -231,11 +231,11 @@ node scripts/activate-expiration.mjs --config "$release_dir/wrangler.production.
 ```sh
 sha256sum -c "$release_dir/bundle.sha256"
 npx wrangler deploy --config "$release_dir/wrangler.compatible-maintenance.json"
-node scripts/activate-expiration.mjs --config "$release_dir/wrangler.production.json" --apply
-node scripts/activate-expiration.mjs --config "$release_dir/wrangler.production.json"
+node scripts/activate-expiration.mts --config "$release_dir/wrangler.production.json" --apply
+node scripts/activate-expiration.mts --config "$release_dir/wrangler.production.json"
 ```
 
-`activate-expiration.mjs`要求显式`--config`，可选`--env NAME`和`--token-file /private/token`；不带`--apply`只读。应用时单条`INSERT OR IGNORE INTO expiration_activation(id) VALUES(1)`由D1生成UTC Unix秒T0，插入触发器在同一语句内固定迁移数量并设置旧未删除资源`T0 + 2592000`，包含pending。新资源策略有显式版本；旧漏字段插入即使晚到也使用同一T0，旧pending后续发布不重设截止。
+`activate-expiration.mts`要求显式`--config`，可选`--env NAME`和`--token-file /private/token`；不带`--apply`只读。应用时单条`INSERT OR IGNORE INTO expiration_activation(id) VALUES(1)`由D1生成UTC Unix秒T0，插入触发器在同一语句内固定迁移数量并设置旧未删除资源`T0 + 2592000`，包含pending。新资源策略有显式版本；旧漏字段插入即使晚到也使用同一T0，旧pending后续发布不重设截止。
 
 保存返回的`activated_at`、`legacy_expires_at`、`migrated_count`及迁移前后资源核对结果。`migrated_count`是T0瞬间迁移数量，晚到旧插入应另行核对。脚本响应丢失时先只读预览；重复`--apply`保留原T0和用户后续修改，不能手工批量UPDATE重新计时或覆盖永久设置。
 

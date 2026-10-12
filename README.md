@@ -83,6 +83,8 @@ npm run db:migrate:local
 npm run dev
 ```
 
+维护的脚本、测试与夹具统一使用 `.mts`，Node.js 24.12+ 原生执行。`npm run check:types` 分别按 Node 与 workerd 环境严格检查全部 TypeScript；测试夹具用 Node 原生类型擦除后交给 workerd。Rust/Wasm 工具链生成的 `build/index.js` 与第三方依赖不纳入 Git，仓库测试会拒绝新增 JavaScript 源文件。
+
 `wrangler.local.jsonc` 使用占位资源，不含生产 Route。本地 MCP 仍验证 Access JWT；`npm run check` 使用独立测试密钥和本地 workerd，覆盖服务、部署初始化及上传脚本，不连接云端。`npm run dry-run` 检查本地配置与发布包。
 
 - [产品需求](docs/requirements/product.md)、[技术设计](docs/design/technical.md)

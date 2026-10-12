@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "ES2023",
+    "target": "ES2024",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
@@ -8,7 +8,16 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["skills/cf-content-share/scripts/**/*.mts", "tests/upload-skill.test.mts"]
+  "include": [
+    "scripts/**/*.mts",
+    "skills/**/*.mts",
+    "tests/**/*.mts"
+  ],
+  "exclude": [
+    "tests/*-fixture.mts"
+  ]
 }

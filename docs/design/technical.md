@@ -430,7 +430,7 @@ Rust 使用 workers-rs / worker-build 生成 Wasm 和平台入口，由 Wrangler
 `T0` 是本次有效期功能首次部署生效的统一 UTC 时刻，必须在发布时持久记录；不是旧资源创建时间、文档更新时间，也不是每次 Worker 重新部署的时间。`0003_expiration.sql` 只准备字段、索引及触发器，并补充旧删除原因；应用 Schema 本身不会产生 `T0`。本轮实际激活时间与迁移数量见[有效期云端验收](../research/2026-10-12-expiration-cloud-acceptance.md)，不能以文档日期代替实际 `T0`。
 
 1. 用临时全路径 503 维护入口阻断业务，scheduled 暂不执行；耗尽旧在途执行后先备份，再应用加法 Schema。随后发布加载新正式 bundle、仍阻断 fetch/scheduled 的兼容维护入口；不在新 Worker 成功发布前激活。临时入口和私有配置保存在仓库外，不增加产品持久开关或认证旁路。
-2. `scripts/activate-expiration.mjs` 默认只读预览，显式 `--apply` 执行单条 `INSERT OR IGNORE`。`expiration_activation` 单例由 D1 固定 `activated_at=T0`；插入触发器原子记录 `migrated_count` 并为旧的未删除资源设定 `expires_at = T0 + 2592000`，包含旧待发布资源。已删除资源不恢复，ID、操作映射、文件 key 和公开 URL 不变。
+2. `scripts/activate-expiration.mts` 默认只读预览，显式 `--apply` 执行单条 `INSERT OR IGNORE`。`expiration_activation` 单例由 D1 固定 `activated_at=T0`；插入触发器原子记录 `migrated_count` 并为旧的未删除资源设定 `expires_at = T0 + 2592000`，包含旧待发布资源。已删除资源不恢复，ID、操作映射、文件 key 和公开 URL 不变。
 3. 初始化提交和完成标记必须可恢复、可重入。重复迁移、失败重试、重新部署不得产生新 `T0`，也不得以 `expires_at IS NULL` 为条件重新批量赋值，以免覆盖用户迁移后设置的永久资源。
 4. 新建资源显式使用新策略版本，旧漏字段 INSERT 即使晚于激活也由触发器设为同一 T0 截止；旧 pending 后续发布不覆盖截止。旧操作保留独立指纹版本，不因期限编辑改变创建幂等关系。新版本拒绝缺少有效期字段的旧 KV 格式并回源；后台任务与读取回填都按迁移后的 D1 状态生成新格式。保留旧创建操作的参数指纹兼容，查询或重试不能把已迁移资源恢复为永久或重算 30 天。
 5. 读回 T0、迁移数量和旧资源截止，证明重复激活不变后，用同一已核对摘要的正式 bundle 去掉维护 wrapper 恢复服务。验证旧链接、待发布恢复、手动改期限／永久和重复部署；恢复发布失败时保持维护，不重设 T0。详细命令见[部署与升级](../deployment.md#5-正式版本升级)。资源历史、操作与防覆盖对象沿用原保留规则，不进行额外垃圾回收。

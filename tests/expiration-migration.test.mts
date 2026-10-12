@@ -17,8 +17,9 @@ test('Wrangler parses expiration migration and D1 enforces publication guards at
  await db.exec("INSERT INTO resources(id,kind,state,target_url,created_at,expiration_policy_version,retention_seconds) VALUES('OverflowUrl2','url','pending','https://example.com',1,1,9007199254740991); INSERT INTO resources(id,kind,state,target_url,created_at,expires_at) VALUES('ExpiredPend1','url','pending','https://example.com',1,1)");
  await assert.rejects(db.exec("UPDATE resources SET state='published' WHERE id='OverflowUrl2'"),/RETENTION_OVERFLOW/);
  await assert.rejects(db.exec("UPDATE resources SET state='published' WHERE id='ExpiredPend1'"),/RESOURCE_EXPIRED/);
- assert.equal((await db.prepare("SELECT count(*) AS count FROM resources WHERE state='pending'").first()).count,2);
+ assert.equal((await db.prepare("SELECT count(*) AS count FROM resources WHERE state='pending'").first())!.count,2);
  await db.exec("INSERT INTO resources(id,kind,state,target_url,created_at,expiration_policy_version,retention_seconds) VALUES('Permanent001','url','published','https://example.com',1,1,NULL); INSERT OR IGNORE INTO expiration_activation(id) VALUES(1)");
  const permanent=await db.prepare("SELECT expires_at,published_at FROM resources WHERE id='Permanent001'").first();
+ assert(permanent);
  assert.equal(permanent.expires_at,null);assert(Number.isSafeInteger(permanent.published_at));
 });

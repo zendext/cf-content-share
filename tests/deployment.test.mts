@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { mkdtemp, writeFile, readFile, readdir, rm, stat, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { initialize } from '../scripts/init-cloud.mjs';
+import { initialize, type CloudFetch, type InitializeOptions } from '../scripts/init-cloud.mts';
 
 const account = 'a'.repeat(32);
 const dbId = '00000000-0000-0000-0000-000000000001';
@@ -15,22 +15,23 @@ const config = {
   access_issuer: 'https://example.cloudflareaccess.com', access_aud: 'c'.repeat(64),
 };
 
+type CloudItem = { name?: string; uuid?: string; title?: string; id?: string; storage_class?: string };
 function cloud() {
-  const data = { d1: [], kv: [], r2: [] };
-  const requests = [];
-  let failCreate;
-  const fetch = async (url, options) => {
+  const data: Record<'d1' | 'kv' | 'r2', CloudItem[]> = { d1: [], kv: [], r2: [] };
+  const requests: { route: string; method: string | undefined; body: unknown; query: Record<string, string> }[] = [];
+  let failCreate: 'd1' | 'kv' | 'r2' | undefined;
+  const fetch: CloudFetch = async (url, options) => {
     assert.equal(options.headers.Authorization, `Bearer ${token}`);
     const u = new URL(url);
     const route = u.pathname.split(`/accounts/${account}/`)[1];
     const method = options.method;
-    requests.push({ route, method, body: options.body ? JSON.parse(options.body) : undefined, query: Object.fromEntries(u.searchParams) });
+    requests.push({ route, method, body: options.body ? JSON.parse(options.body!) : undefined, query: Object.fromEntries(u.searchParams) });
     const kind = route.startsWith('d1/') ? 'd1' : route.startsWith('storage/') ? 'kv' : 'r2';
     if (method === 'GET' && /^r2\/buckets\/[^/]+$/.test(route)) return Response.json({ success: true, result: data.r2.find(item => item.name === route.split('/')[2]) });
     if (route.endsWith('/domains/managed')) return Response.json({ success: true, result: { enabled: false } });
     if (route.endsWith('/domains/custom')) return Response.json({ success: true, result: { domains: [] } });
     if (method === 'POST') {
-      const body = JSON.parse(options.body);
+      const body = JSON.parse(options.body!);
       const item = kind === 'd1' ? { name: body.name, uuid: dbId } : kind === 'kv' ? { title: body.title, id: kvId } : { name: body.name, storage_class: body.storage_class };
       data[kind].push(item);
       if (failCreate === kind) { failCreate = undefined; throw new Error(`network ${token} other-body-password`); }
@@ -39,17 +40,17 @@ function cloud() {
     assert.equal(method, 'GET');
     return Response.json({ success: true, result: kind === 'r2' ? { buckets: data[kind] } : data[kind], result_info: { total_count: data[kind].length } });
   };
-  return { data, requests, fetch, fail: kind => { failCreate = kind; } };
+  return { data, requests, fetch, fail: (kind: 'd1' | 'kv' | 'r2') => { failCreate = kind; } };
 }
 
-async function fixture(t, overrides = {}) {
+async function fixture(t: TestContext, overrides: Record<string, unknown> = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'share-deploy-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const input = path.join(root, 'deployment.local.json');
   const output = path.join(root, 'wrangler.cloud.json');
   await writeFile(input, JSON.stringify({ ...config, ...overrides }));
   const api = cloud();
-  return { root, input, output, api, run: (options = {}) => initialize({ configFile: input, outputFile: output, projectRoot: root, token, fetch: api.fetch, ...options }) };
+  return { root, input, output, api, run: (options: Partial<InitializeOptions> = {}) => initialize({ configFile: input, outputFile: output, projectRoot: root, token, fetch: api.fetch, ...options }) };
 }
 
 test('plan lists resources but creates no resource or local file', async t => {
@@ -88,7 +89,7 @@ test('apply creates only missing resources, writes private config and reuses all
   assert.deepEqual(second.resources.map(item => item.action), ['reuse', 'reuse', 'reuse']);
   assert.equal(await readFile(f.output, 'utf8'), first);
   assert.equal(f.api.requests.filter(item => item.method === 'POST').length, 3);
-  assert.ok(f.api.requests.every(item => ['GET', 'POST'].includes(item.method)));
+  assert.ok(f.api.requests.every(item => ['GET', 'POST'].includes(item.method!)));
   assert.ok(!f.api.requests.some(item => item.route.includes('unrelated-public/')));
   assert.equal(f.api.data.d1.length, 2);
 });
@@ -109,8 +110,8 @@ test('output in a subdirectory uses paths relative to the config, with no impose
 
 test('all pages are searched and exact names win over prefix matches', async t => {
   const f = await fixture(t);
-  const seen = [];
-  const fetch = async (url, options) => {
+  const seen: URL[] = [];
+  const fetch: CloudFetch = async (url, options) => {
     assert.equal(options.method, 'GET');
     const u = new URL(url);
     seen.push(u);
@@ -139,6 +140,7 @@ test('unknown create outcome stops, redacts errors and reuses partial creation o
   const f = await fixture(t);
   f.api.fail('kv');
   await assert.rejects(f.run({ apply: true }), error => {
+    assert(error instanceof Error);
     assert.match(error.message, /创建结果未知/);
     assert.ok(!error.message.includes(token));
     assert.ok(!error.message.includes('other-body-password'));
@@ -156,6 +158,7 @@ test('unknown create outcome stops, redacts errors and reuses partial creation o
 test('API errors expose only status and numeric codes, never server messages or credentials', async t => {
   const f = await fixture(t);
   await assert.rejects(f.run({ fetch: async () => Response.json({ success: false, errors: [{ code: 10000, message: `${token} password=unrelated-secret` }] }, { status: 403 }) }), error => {
+    assert(error instanceof Error);
     assert.match(error.message, /HTTP 403，错误码 10000/);
     assert.ok(!error.message.includes(token));
     assert.ok(!error.message.includes('unrelated-secret'));
@@ -196,7 +199,7 @@ test('invalid input identifiers and secret-bearing fields fail without API calls
 });
 
 test('token file requires 0600 and is never treated as config', async t => {
-  const { readToken } = await import('../scripts/init-cloud.mjs');
+  const { readToken } = await import('../scripts/init-cloud.mts');
   const f = await fixture(t);
   const file = path.join(f.root, 'secret');
   await writeFile(file, token, { mode: 0o600 });
@@ -231,7 +234,7 @@ test('malformed list responses and repeated cursors fail closed without creating
 
 test('CLI rejects token command arguments without echoing them', async () => {
   const { spawnSync } = await import('node:child_process');
-  const result = spawnSync(process.execPath, ['scripts/init-cloud.mjs', `--token=${token}`], { cwd: path.resolve(import.meta.dirname, '..'), encoding: 'utf8', env: {} });
+  const result = spawnSync(process.execPath, ['scripts/init-cloud.mts', `--token=${token}`], { cwd: path.resolve(import.meta.dirname, '..'), encoding: 'utf8', env: {} });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /参数无效/);
   assert.ok(!result.stderr.includes(token));
@@ -256,7 +259,7 @@ test('output locks and symlinks cannot overwrite user files', async t => {
 test('new R2 buckets explicitly use Standard storage', async t => {
   const f = await fixture(t);
   await f.run({ apply: true });
-  assert.deepEqual(f.api.requests.find(item => item.route === 'r2/buckets' && item.method === 'POST').body,
+  assert.deepEqual(f.api.requests.find(item => item.route === 'r2/buckets' && item.method === 'POST')!.body,
     { name: 'share-test', storage_class: 'Standard' });
   assert.ok(f.api.requests.some(item => item.route === 'r2/buckets/share-test' && item.method === 'GET'));
 });

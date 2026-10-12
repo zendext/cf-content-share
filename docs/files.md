@@ -78,12 +78,12 @@ D1 条件写入同时登记资源、操作和容量预留；SQL trigger 在同�
 ```sh
 npm ci
 CARGO_TARGET_DIR="$PWD/target" PATH="$HOME/.cargo/bin:$PATH" npm run check
-node --test tests/r2-fencing.test.mjs
+node --test tests/r2-fencing.test.mts
 ```
 
 使用独立 target 目录避免多个同名 Cargo 工程在并行工作树中共用构建产物。测试通过真实 workerd、D1、KV、R2、Cache API 与官方 MCP SDK 执行；故障只注入测试入口的绑定、定时器和 D1 trigger，不存在生产故障开关。迁移测试先建立 0001 的网址和操作，再执行 0002、0003；覆盖激活前不倒计时、旧 published/pending/deleted、统一 T0、晚到旧插入、手动永久与旧操作重放，检查旧分享地址与外键。
 
-本地 R2 实验 `tests/r2-fencing.test.mjs`：一个两字节 FixedLengthStream 先交付一字节，另一请求在同 key 建立屏障，原流再提交剩余字节。实测原 put 返回 null，屏障保持不变。API 的条件写入与强一致性依据见 [R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/) 与 [一致性说明](https://developers.cloudflare.com/r2/reference/consistency/)。该实验仅证明本地 workerd 行为，不能替代云端并发与跨节点验证。
+本地 R2 实验 `tests/r2-fencing.test.mts`：一个两字节 FixedLengthStream 先交付一字节，另一请求在同 key 建立屏障，原流再提交剩余字节。实测原 put 返回 null，屏障保持不变。API 的条件写入与强一致性依据见 [R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/) 与 [一致性说明](https://developers.cloudflare.com/r2/reference/consistency/)。该实验仅证明本地 workerd 行为，不能替代云端并发与跨节点验证。
 
 本次期限与KV规则已部署并激活；真实1 MiB流式上传与幂等重发、30秒SVG到期GET/HEAD/Range拒绝、永久空文件验证见[本次云端记录](research/2026-10-12-expiration-cloud-acceptance.md)，文件自然Cron清理及测试资源收尾均已完成。历史真实 32 MiB 上传、摘要回读、SVG、Range、会话撤销和文件统计的云端结果见[正式验收记录](research/2026-10-11-formal-cloud-acceptance.md)。未验证项仍包括 Hermes、跨节点 KV 传播、浏览器长期复用和云端 R2 并发故障恢复；本地故障证据不代替这些范围。
 

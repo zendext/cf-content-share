@@ -1,3 +1,5 @@
+import { stripTypeScriptTypes } from 'node:module';
+import type { ApiError, ResourceResult, Results, Descriptor, Catalog, Storage, Mapping, D1Event, R2Event, CacheEvent, Heartbeat, AnalyticsPoint } from './test-contracts.mts';
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign, randomUUID, createHash } from 'node:crypto';
@@ -12,31 +14,31 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 20
 const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'service-key', alg: 'RS256', use: 'sig' };
 function jwt(changes = {}, header = {}) {
   const now = Math.floor(Date.now() / 1000);
-  const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   const data = `${encode({ alg: 'RS256', kid: jwk.kid, ...header })}.${encode({ iss: issuer, aud: ['service-aud'], sub: 'fixture-user', exp: now + 3600, nbf: now - 1, ...changes })}`;
   return `${data}.${sign('RSA-SHA256', Buffer.from(data), privateKey).toString('base64url')}`;
 }
-let mf, db, kv, client;
-let sqlQueries = [], sqlRows = [], sqlStatus = 200, malformed = false, providerError = false, projectedOrderOnly = false;
+let mf: Miniflare, db: Awaited<ReturnType<Miniflare['getD1Database']>>, kv: Awaited<ReturnType<Miniflare['getKVNamespace']>>, client: Client;
+let sqlQueries: string[] = [], sqlRows: unknown = [], sqlStatus = 200, malformed = false, providerError = false, projectedOrderOnly = false;
 const now = () => Math.floor(Date.now() / 1000);
 const create = (extra = {}) => call('resource.create_url', { operation_id: randomUUID(), target_url: 'https://example.com/', ...extra });
-const errorCall = async (operation, args, code) => {
+const errorCall = async (operation: string, args: Record<string, unknown>, code: string) => {
   const result = await client.callTool({ name: 'invoke', arguments: { operation, arguments: args } });
   assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error.code, code, JSON.stringify(result));
+  assert.equal((result.structuredContent as { error: ApiError }).error.code, code, JSON.stringify(result));
   assert.equal(JSON.stringify(result).includes('secret-must-not-leak'), false);
-  return result.structuredContent.error;
+  return (result.structuredContent as { error: ApiError }).error;
 };
-const request = (path, init) => mf.dispatchFetch(origin + path, init);
-const call = async (operation, args = {}) => {
+const request = (path: string, init?: Parameters<Miniflare['dispatchFetch']>[1]) => mf.dispatchFetch(origin + path, init);
+const call = async <K extends keyof Results,>(operation: K, args: Record<string, unknown> = {}): Promise<Results[K]> => {
   const result = await client.callTool({ name: 'invoke', arguments: { operation, arguments: args } });
   assert.equal(result.isError, false, JSON.stringify(result));
-  return result.structuredContent;
+  return result.structuredContent as Results[K];
 };
 before(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ workers: [{
     name: "service", modulesRoot: '.', modules: [
-      { type: 'ESModule', path: 'tests/stats-fixture.mjs' },
+      { type: 'ESModule', path: 'tests/stats-fixture.mts', contents: stripTypeScriptTypes(await readFile('tests/stats-fixture.mts', 'utf8')) },
       { type: 'ESModule', path: 'build/index.js' },
       { type: 'CompiledWasm', path: 'build/index_bg.wasm' },
     ],
@@ -64,7 +66,7 @@ before(async () => {
   }
   client = new Client({ name: 'service-test', version: '1.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(origin + '/mcp'), {
-    fetch: (url, init) => mf.dispatchFetch(String(url), init),
+    fetch: (url, init) => mf.dispatchFetch(String(url), init as Parameters<Miniflare['dispatchFetch']>[1]) as unknown as Promise<Response>,
     requestInit: { headers: { 'cf-access-jwt-assertion': jwt() } },
   });
   await client.connect(transport);
@@ -80,8 +82,8 @@ test('stats summary uses weighted aggregate and explicit window', async () => {
  assert.equal(result.items[0].visits,17);
  assert.equal(result.timezone,'Asia/Shanghai');
  assert.equal(result.completeness,'unknown');
- assert.match(sqlQueries.at(-1),/SUM\(_sample_interval\)/);
- assert.match(sqlQueries.at(-1),new RegExp(`double1 >= ${start} AND double1 < ${end}`));
+ assert.match(sqlQueries.at(-1)!,/SUM\(_sample_interval\)/);
+ assert.match(sqlQueries.at(-1)!,new RegExp(`double1 >= ${start} AND double1 < ${end}`));
 });
 
 test('one synchronous submission per successful GET including repeats, bots, preview and stale delete; HEAD/errors excluded', async()=>{
@@ -93,9 +95,9 @@ test('one synchronous submission per successful GET including repeats, bots, pre
  await request('/r/NoSuchRes0000',{redirect:'manual'});
  const snapshot=await kv.get(resource.id);
  await call('resource.delete',{resource_id:resource.id});
- await kv.put(resource.id,snapshot);
+ await kv.put(resource.id,snapshot!);
  assert.equal((await request('/r/'+resource.id,{redirect:'manual'})).status,302);
- const points=await (await request('/test-points')).json();
+ const points=(await (await request('/test-points')).json() as AnalyticsPoint[]);
  assert.equal(points.length,5);
  assert.equal(new Set(points.map(x=>x.blobs[0])).size,5);
  for(const p of points){assert.deepEqual(p.indexes,[resource.id]);assert.equal(p.blobs[1],resource.id);assert.equal(p.blobs[2],'url');assert.equal(p.doubles[1],302);assert.equal(p.blobs.length,7);}
@@ -108,10 +110,10 @@ test('collector failure and overlong UTF-8 field do not block redirects or trunc
  await request('/test-points',{method:'DELETE'});
  await request('/test-fail?value=1');
  try {assert.equal((await request('/r/'+resource.id,{redirect:'manual'})).status,302);}finally{await request('/test-fail?value=0');}
- assert.equal((await (await request('/test-points')).json()).length,0);
+ assert.equal(((await (await request('/test-points')).json() as AnalyticsPoint[])).length,0);
  assert.equal((await request('/r/'+resource.id,{redirect:'manual',headers:{referer:'https://e.test/'+ 'é'.repeat(9000)}})).status,302);
- assert.equal((await (await request('/test-points')).json()).length,0);
- const logs=await(await request('/test-logs')).json();assert.ok(logs.some(x=>x.includes('ANALYTICS_EVENT_TOO_LARGE')));assert.ok(logs.some(x=>x.includes('ANALYTICS_COLLECTION_FAILED')));assert.ok(!JSON.stringify(logs).includes('secret-must-not-leak'));
+ assert.equal(((await (await request('/test-points')).json() as AnalyticsPoint[])).length,0);
+ const logs=(await(await request('/test-logs')).json() as string[]);assert.ok(logs.some(x=>x.includes('ANALYTICS_EVENT_TOO_LARGE')));assert.ok(logs.some(x=>x.includes('ANALYTICS_COLLECTION_FAILED')));assert.ok(!JSON.stringify(logs).includes('secret-must-not-leak'));
 });
 
 test('all fixed aggregate views use weights, common filters and bounded output',async()=>{
@@ -124,11 +126,11 @@ test('all fixed aggregate views use weights, common filters and bounded output',
   const result=await call('stats.query',{...args,view,...(view==='trend'?{granularity:'hour',timezone:'America/New_York'}:{})});
   assert.equal(result.items[0].visits,42);
   const sql=sqlQueries.at(-1);
-  assert.match(sql,/SUM\(_sample_interval\)/);
-  assert.ok(sql.includes(`hex(index1) = '${Buffer.from(resource.id).toString('hex').toUpperCase()}'`));
-  assert.ok(sql.includes("hex(blob3) = '75726C'"));
+  assert.match(sql!,/SUM\(_sample_interval\)/);
+  assert.ok(sql!.includes(`hex(index1) = '${Buffer.from(resource.id).toString('hex').toUpperCase()}'`));
+  assert.ok(sql!.includes("hex(blob3) = '75726C'"));
   if(view==='top')assert.deepEqual(result.items[0].resource,{id:resource.id,title:'Deleted resource',state:'deleted',published_at:resource.published_at,expires_at:resource.expires_at,deleted_reason:'manual',accessible:false,unavailable_reason:'deleted'});
-  if(view==='trend')assert.match(sql,/INTERVAL '1' HOUR, 'America\/New_York'/);
+  if(view==='trend')assert.match(sql!,/INTERVAL '1' HOUR, 'America\/New_York'/);
   if(view==='regions')assert.equal(result.items[0].city,null);
  }
 });
@@ -152,16 +154,16 @@ test('samples preserve exact fields and weight, bind cursor filters/window/zone,
  const filters={start,end,referer,country:'CN',region:'Beijing',city:'Beijing',kind:'url',resource_id:resource.id};
  const page=await call('stats.samples',{...filters,limit:1});
  assert.equal(page.items[0]._sample_interval,8);assert.equal(page.items[0].referer,referer);assert.equal(page.has_more,true);assert.ok(page.next_cursor);
- assert.match(sqlQueries.at(-1),/ORDER BY time DESC, event_id DESC LIMIT 2/);
- assert.ok(sqlQueries.at(-1).includes(`hex(blob4) = '${Buffer.from(referer).toString('hex').toUpperCase()}'`));
- assert.ok(!sqlQueries.at(-1).includes('OR 1=1'));
+ assert.match(sqlQueries.at(-1)!,/ORDER BY time DESC, event_id DESC LIMIT 2/);
+ assert.ok(sqlQueries.at(-1)!.includes(`hex(blob4) = '${Buffer.from(referer).toString('hex').toUpperCase()}'`));
+ assert.ok(!sqlQueries.at(-1)!.includes('OR 1=1'));
  sqlRows=[{...row,event_id:'yyyyyyyyyyyy'}];
  const next=await call('stats.samples',{...filters,limit:1,cursor:page.next_cursor});
  assert.equal(next.has_more,false);assert.equal(next.next_cursor,null);
- assert.ok(sqlQueries.at(-1).includes(`double1 < ${end-1} OR (double1 = ${end-1} AND blob1 < 'zzzzzzzzzzzz')`));
+ assert.ok(sqlQueries.at(-1)!.includes(`double1 < ${end-1} OR (double1 = ${end-1} AND blob1 < 'zzzzzzzzzzzz')`));
  for(const changed of [{end:end-1},{referer:'other'},{country:'US'},{region:'x'},{city:'x'},{kind:'file'},{resource_id:'AAAAAAAAAAAA'},{timezone:'UTC'}]) await errorCall('stats.samples',{...filters,...changed,cursor:page.next_cursor},'INVALID_CURSOR');
- sqlRows=[]; await call('stats.samples',{start,end});assert.match(sqlQueries.at(-1),/LIMIT 21/);
- await call('stats.samples',{start,end,limit:100});assert.match(sqlQueries.at(-1),/LIMIT 101/);
+ sqlRows=[]; await call('stats.samples',{start,end});assert.match(sqlQueries.at(-1)!,/LIMIT 21/);
+ await call('stats.samples',{start,end,limit:100});assert.match(sqlQueries.at(-1)!,/LIMIT 101/);
 });
 
 test('query HTTP, JSON, shape and oversized response failures are explicit and scrubbed',async()=>{
@@ -183,7 +185,7 @@ test('legal 100 long raw Referer samples fit the bounded response even with JSON
 test('collector copies only provided Cloudflare geographic fields',async()=>{
  const {resource}=await create();await request('/test-points',{method:'DELETE'});
  await request('/r/'+resource.id,{redirect:'manual',cf:{country:'CN',region:'Zhejiang',city:'Hangzhou'}});
- const points=await(await request('/test-points')).json();
+ const points=(await(await request('/test-points')).json() as AnalyticsPoint[]);
  assert.deepEqual(points[0].blobs.slice(4),['CN','Zhejiang','Hangzhou']);
 });
 
@@ -193,13 +195,13 @@ test('D1 metadata failure is reported without discarding weighted historical res
  await db.exec('ALTER TABLE resources RENAME TO resources_unavailable');
  try {
   const result=await call('stats.query',{start,end,view:'top'});
-  assert.equal(result.items[0].visits,31);assert.equal(result.items[0].resource.state,'unknown');
+  assert.equal(result.items[0].visits,31);assert.equal(result.items[0].resource!.state,'unknown');
   assert.deepEqual(result.diagnostics,['RESOURCE_METADATA_UNAVAILABLE']);assert.equal(result.completeness,'unknown');
  } finally {await db.exec('ALTER TABLE resources_unavailable RENAME TO resources');}
 });
 
 
-async function uploadFile(bytes, changes = {}) {
+async function uploadFile(bytes: Buffer, changes: Record<string, unknown> = {}) {
  const {token} = await call('session.create');
  const metadata = {operation_id:randomUUID(),filename:'stats.bin',content_type:'application/octet-stream',size_bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),...changes};
  const boundary = 'stats-upload-boundary';
@@ -209,20 +211,20 @@ async function uploadFile(bytes, changes = {}) {
  ]);
  const response = await request('/upload',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':`multipart/form-data; boundary=${boundary}`},body});
  assert.equal(response.status,201,await response.clone().text());
- return (await response.json()).resource;
+ return ((await response.json() as ResourceResult)).resource;
 }
-const points = async () => (await request('/test-points')).json();
-const waitForCache = async path => {
+const points = async () => await (await request('/test-points')).json() as AnalyticsPoint[];
+const waitForCache = async (path: string) => {
  assert.equal((await request('/test-cache-wait?url='+encodeURIComponent(origin+path))).status,200);
 };
 
 test('file R2/cache GET, range, retries, bots and preview each submit once; HEAD and errors never submit', {timeout:15000}, async()=>{
  const bytes = Buffer.from('0123456789'), resource = await uploadFile(bytes), path = '/r/'+resource.id;
  await request('/test-points',{method:'DELETE'});
- const before = (await (await request('/test-r2')).json()).reads;
+ const before = ((await (await request('/test-r2')).json() as { reads: number })).reads;
  const first = await request(path,{headers:{referer:'https://docs.test/download?version=1'}});
  assert.equal(first.status,200);assert.deepEqual(Buffer.from(await first.arrayBuffer()),bytes);
- assert.equal((await (await request('/test-r2')).json()).reads,before+1);
+ assert.equal(((await (await request('/test-r2')).json() as { reads: number })).reads,before+1);
  await waitForCache(path);
  await request('/test-r2?fail=1');
  try {
@@ -231,7 +233,7 @@ test('file R2/cache GET, range, retries, bots and preview each submit once; HEAD
    const cached = await request(path,{headers});assert.equal(cached.status,200);
    assert.deepEqual(Buffer.from(await cached.arrayBuffer()),bytes);
   }
-  assert.equal((await (await request('/test-r2')).json()).reads,before+1);
+  assert.equal(((await (await request('/test-r2')).json() as { reads: number })).reads,before+1);
   const rejected = await request(path,{headers:{range:'bytes=2-4'}});
   assert.equal(rejected.status,503);await rejected.text();
  } finally {await request('/test-r2?fail=0');}
@@ -254,7 +256,7 @@ test('raw SVG cache and successful stale deletion propagation retain served imag
  const resource = await uploadFile(bytes,{filename:'raw.svg',content_type:'image/svg+xml'}), path='/r/'+resource.id;
  await request('/test-points',{method:'DELETE'});
  const shown=await request(path);assert.equal(shown.status,200);assert.equal(shown.headers.get('content-type'),'image/svg+xml');
- assert.match(shown.headers.get('content-disposition'),/^inline/);assert.deepEqual(Buffer.from(await shown.arrayBuffer()),bytes);
+ assert.match(shown.headers.get('content-disposition')!,/^inline/);assert.deepEqual(Buffer.from(await shown.arrayBuffer()),bytes);
  await waitForCache(path);
  const oldMapping = await kv.get(resource.id);
  await request('/test-cache-delete?fail=1');
@@ -262,24 +264,24 @@ test('raw SVG cache and successful stale deletion propagation retain served imag
   const deleted = await call('resource.delete',{resource_id:resource.id});assert.equal(deleted.resource.state,'deleted');
  } finally {await request('/test-cache-delete?fail=0');}
  const tombstone = await kv.get(resource.id);
- assert.equal(JSON.parse(tombstone).state,'deleted');
- await kv.put(resource.id,oldMapping);
+ assert.equal(JSON.parse(tombstone!).state,'deleted');
+ await kv.put(resource.id,oldMapping!);
  await request('/test-r2?fail=1');
  try {
-  const before=(await(await request('/test-r2')).json()).reads;
+  const before=((await(await request('/test-r2')).json() as { reads: number })).reads;
   // An unavailable resource table also proves collection uses the served mapping kind.
   await db.exec('ALTER TABLE resources RENAME TO resources_unavailable');
   try {
    const stale=await request(path);assert.equal(stale.status,200);assert.deepEqual(Buffer.from(await stale.arrayBuffer()),bytes);
   } finally {await db.exec('ALTER TABLE resources_unavailable RENAME TO resources');}
-  assert.equal((await(await request('/test-r2')).json()).reads,before);
+  assert.equal(((await(await request('/test-r2')).json() as { reads: number })).reads,before);
   const served=await points();assert.equal(served.length,2);
   for(const event of served){assert.equal(event.blobs[1],resource.id);assert.equal(event.blobs[2],'image');assert.equal(event.doubles[1],200);}
-  await kv.put(resource.id,tombstone);
+  await kv.put(resource.id,tombstone!);
   const rejected=await request(path);assert.equal(rejected.status,404);await rejected.text();
   assert.equal((await points()).length,2);
-  assert.equal((await(await request('/test-r2')).json()).reads,before);
- } finally {await request('/test-r2?fail=0');await kv.put(resource.id,tombstone);}
+  assert.equal(((await(await request('/test-r2')).json() as { reads: number })).reads,before);
+ } finally {await request('/test-r2?fail=0');await kv.put(resource.id,tombstone!);}
 });
 
 test('file collector failure preserves full and range response bytes',async()=>{
@@ -290,7 +292,7 @@ test('file collector failure preserves full and range response bytes',async()=>{
   const part=await request(path,{headers:{range:'bytes=0-8'}});assert.equal(part.status,206);assert.equal(await part.text(),'collector');
   assert.equal((await points()).length,0);
  } finally {await request('/test-fail?value=0');}
- const logs=await(await request('/test-logs')).json();assert.ok(logs.some(value=>value.includes('ANALYTICS_COLLECTION_FAILED')));
+ const logs=(await(await request('/test-logs')).json() as string[]);assert.ok(logs.some(value=>value.includes('ANALYTICS_COLLECTION_FAILED')));
  assert.ok(!JSON.stringify(logs).includes('secret-must-not-leak'));
 });
 
@@ -325,7 +327,7 @@ test('expiration keeps historical weighted visits while exposing current unavail
  await db.prepare('UPDATE resources SET expires_at=unixepoch()-1 WHERE id=?').bind(resource.id).run();
  sqlRows=[{resource_id:resource.id,kind:'url',visits:17}];
  const before=await call('stats.query',{view:'top',start,end});
- assert.equal(before.items[0].visits,17);assert.equal(before.items[0].resource.state,'published');assert.equal(before.items[0].resource.accessible,false);assert.equal(before.items[0].resource.unavailable_reason,'expired');
- await (await mf.getWorker()).scheduled({cron:'*/5 * * * *',scheduledTime:Date.now()});
- const after=await call('stats.query',{view:'top',start,end});assert.equal(after.items[0].visits,17);assert.equal(after.items[0].resource.state,'deleted');assert.equal(after.items[0].resource.deleted_reason,'expired');assert.equal(after.items[0].resource.unavailable_reason,'expired');
+ assert.equal(before.items[0].visits,17);assert.equal(before.items[0].resource!.state,'published');assert.equal(before.items[0].resource!.accessible,false);assert.equal(before.items[0].resource!.unavailable_reason,'expired');
+ await (await mf.getWorker()).scheduled({cron:'*/5 * * * *',scheduledTime:new Date()});
+ const after=await call('stats.query',{view:'top',start,end});assert.equal(after.items[0].visits,17);assert.equal(after.items[0].resource!.state,'deleted');assert.equal(after.items[0].resource!.deleted_reason,'expired');assert.equal(after.items[0].resource!.unavailable_reason,'expired');
 });

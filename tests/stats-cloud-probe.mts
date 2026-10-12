@@ -9,10 +9,10 @@ for(const [instant,zone,hour,day] of [
  ['2026-11-01T05:30:00Z','America/New_York',1793509200,1793505600],
  ['2026-11-01T06:30:00Z','America/New_York',1793512800,1793505600],
  ['2026-10-10T16:30:00Z','Asia/Shanghai',1791648000,1791648000],
-]){
+] as const){
  const time=Date.parse(instant)/1000;
  const sql=`SELECT toUnixTimestamp(toStartOfInterval(toDateTime(${time}), INTERVAL '1' HOUR, '${zone}')) AS hour, toUnixTimestamp(toStartOfInterval(toDateTime(${time}), INTERVAL '1' DAY, '${zone}')) AS day, hex('é') AS encoded FORMAT JSON`;
- const response=await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/analytics_engine/sql`,{method:'POST',redirect:'manual',headers:{Authorization:`Bearer ${token}`},body:sql});
+ const response: Response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/analytics_engine/sql`,{method:'POST',redirect:'manual',headers:{Authorization:`Bearer ${token}`},body:sql});
  assert.equal(response.status,200,`Provider HTTP ${response.status}`);
  const data=await response.json();
  // Never include upstream raw bodies in failed assertions; they can echo SQL or diagnostics.

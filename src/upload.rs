@@ -102,8 +102,8 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
     let token = auth::random_token()?;
     // One durable admission transaction reserves capacity and owns this upload attempt.
     for _ in 0..5 {
-        if let Some(op) = store::operation(env, &operation_id).await? {
-            if op.r#type != "resource.upload"
+        if let Some(op) = store::operations::get(&env.d1("DB")?, &operation_id).await? {
+            if op.r#type != store::OperationType::Upload
                 || !(if op.fingerprint_version == 0 {
                     legacy_fingerprint.as_ref() == Some(&op.fingerprint)
                 } else {
@@ -112,12 +112,14 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
             {
                 return error("IDEMPOTENCY_CONFLICT", 409);
             }
-            let resource = store::resource(env, &op.resource_id).await?.unwrap();
-            if resource.state != "pending" || resource.expired() {
+            let resource = store::resources::get(&env.d1("DB")?, &op.resource_id)
+                .await?
+                .unwrap();
+            if resource.state != store::ResourceState::Pending || resource.expired() {
                 return json_response(&store::operation_result(env, &operation_id).await?, 200);
             }
-            if op.upload_state != "needs_reupload"
-                || (op.status == "running"
+            if op.upload_state != store::UploadState::NeedsReupload
+                || (op.status == store::OperationStatus::Running
                     && op.lease_until.is_some_and(|until| until > store::now()))
             {
                 return json_response(&store::operation_result(env, &operation_id).await?, 409);
@@ -125,14 +127,20 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
             if too_large {
                 return error("FILE_TOO_LARGE", 413);
             }
-            let key = store::object_key(&resource.id, &token);
-            let now = store::now() as f64;
-            let total =
-                store::limit(env, "TOTAL_STORAGE_BYTES")?.unwrap_or(9_007_199_254_740_991) as f64;
-            db.batch(vec![
-                db.prepare("UPDATE resources SET accounting='reserved',file_key=? WHERE id=? AND state='pending' AND (expires_at IS NULL OR expires_at>unixepoch()) AND accounting='released' AND (SELECT published_bytes+reserved_bytes+cleanup_bytes FROM storage_usage WHERE id=1)<=?-size_bytes AND EXISTS(SELECT 1 FROM operations WHERE id=? AND upload_state='needs_reupload' AND (status!='running' OR lease_until<=?))").bind(&[key.into(),resource.id.into(),total.into(),operation_id.clone().into(),now.into()])?,
-                db.prepare("UPDATE operations SET upload_state='uploading',upload_token=?,status='running',lease_token=?,lease_until=?,next_retry_at=?,updated_at=?,r2_status='pending',retry_count=0,total_attempts=total_attempts+1 WHERE id=? AND changes()>0").bind(&[token.clone().into(),token.clone().into(),(now+UPLOAD_LEASE as f64).into(),(now+UPLOAD_LEASE as f64).into(),now.into(),operation_id.clone().into()])?
-            ]).await?;
+            let now = store::now();
+            let total = store::limit(env, "TOTAL_STORAGE_BYTES")?.unwrap_or(9_007_199_254_740_991);
+            store::uploads::reserve_reupload(
+                &db,
+                &resource.id,
+                total,
+                &store::uploads::UploadAttempt {
+                    operation_id: &operation_id,
+                    token: &token,
+                    now,
+                    lease_until: now + UPLOAD_LEASE,
+                },
+            )
+            .await?;
             break;
         }
         if too_large {
@@ -142,7 +150,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
             return error("INVALID_METADATA", 400);
         }
         let id = store::resource_id()?;
-        let now = store::now() as f64;
+        let now = store::now();
         let kind = if matches!(
             metadata["content_type"].as_str().unwrap(),
             "image/png"
@@ -154,40 +162,52 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                 | "image/x-icon"
                 | "image/svg+xml"
         ) {
-            "image"
+            store::ResourceKind::Image
         } else {
-            "file"
+            store::ResourceKind::File
         };
-        let total =
-            store::limit(env, "TOTAL_STORAGE_BYTES")?.unwrap_or(9_007_199_254_740_991) as f64;
-        let result=db.batch(vec![
-            db.prepare("INSERT INTO resources(id,kind,state,title,description,tags,created_at,file_key,filename,content_type,size_bytes,sha256,accounting,expiration_policy_version,retention_seconds) SELECT ?,?,'pending',?,?,?,?,?,?,?,?,?,'reserved',1,? WHERE (SELECT published_bytes+reserved_bytes+cleanup_bytes FROM storage_usage WHERE id=1)<=?-?")
-                .bind(&[id.clone().into(),kind.into(),metadata["title"].as_str().unwrap().into(),metadata["description"].as_str().unwrap().into(),metadata["tags"].to_string().into(),now.into(),store::object_key(&id,&token).into(),metadata["filename"].as_str().unwrap().into(),metadata["content_type"].as_str().unwrap().into(),(size as f64).into(),metadata["sha256"].as_str().unwrap().into(),metadata["retention_seconds"].as_i64().map(|n| wasm_bindgen::JsValue::from(n as f64)).unwrap_or(wasm_bindgen::JsValue::NULL),total.into(),(size as f64).into()])?,
-            db.prepare("INSERT INTO operations(id,type,resource_id,fingerprint,status,created_at,updated_at,next_retry_at,lease_token,lease_until,upload_state,upload_token,r2_status,total_attempts,fingerprint_version) SELECT ?,'resource.upload',?,?,'running',?,?,?,?,?,'uploading',?,'pending',1,1 WHERE changes()>0")
-                .bind(&[operation_id.clone().into(),id.clone().into(),fingerprint.clone().into(),now.into(),now.into(),(now+UPLOAD_LEASE as f64).into(),token.clone().into(),(now+UPLOAD_LEASE as f64).into(),token.clone().into()])?
-        ]).await;
+        let total = store::limit(env, "TOTAL_STORAGE_BYTES")?.unwrap_or(9_007_199_254_740_991);
+        let result = store::uploads::reserve_new_upload(
+            &db,
+            &id,
+            &metadata,
+            kind,
+            &fingerprint,
+            total,
+            &store::uploads::UploadAttempt {
+                operation_id: &operation_id,
+                token: &token,
+                now,
+                lease_until: now + UPLOAD_LEASE,
+            },
+        )
+        .await;
         match result {
             Ok(_) => break,
             Err(e) => {
-                if store::operation(env, &operation_id).await?.is_none()
-                    && store::resource(env, &id).await?.is_none()
+                if store::operations::get(&env.d1("DB")?, &operation_id)
+                    .await?
+                    .is_none()
+                    && store::resources::get(&env.d1("DB")?, &id).await?.is_none()
                 {
                     return Err(e);
                 }
             }
         }
     }
-    let Some(op) = store::operation(env, &operation_id).await? else {
+    let Some(op) = store::operations::get(&env.d1("DB")?, &operation_id).await? else {
         return error("CAPACITY_EXCEEDED", 413);
     };
     if op.upload_token.as_deref() != Some(&token) {
-        return if op.upload_state == "needs_reupload" {
+        return if op.upload_state == store::UploadState::NeedsReupload {
             error("CAPACITY_EXCEEDED", 413)
         } else {
             json_response(&store::operation_result(env, &operation_id).await?, 409)
         };
     }
-    let resource = store::resource(env, &op.resource_id).await?.unwrap();
+    let resource = store::resources::get(&env.d1("DB")?, &op.resource_id)
+        .await?
+        .unwrap();
     let abort = Arc::new(AtomicBool::new(false));
     let expected = hex::decode(metadata["sha256"].as_str().unwrap()).unwrap();
     let put = async {
@@ -256,9 +276,15 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
         loop {
             Delay::from(Duration::from_secs(30)).await;
             let now = store::now();
-            let renewed=db.prepare("UPDATE operations SET lease_until=?,next_retry_at=?,updated_at=? WHERE id=? AND lease_token=? AND upload_token=? AND upload_state='uploading' RETURNING id")
-                .bind(&[((now+UPLOAD_LEASE) as f64).into(),((now+UPLOAD_LEASE) as f64).into(),(now as f64).into(),operation_id.clone().into(),token.clone().into(),token.clone().into()])?.first::<Value>(None).await?;
-            if renewed.is_none() {
+            let renewed = store::uploads::renew_upload_lease(
+                &db,
+                &operation_id,
+                &token,
+                now,
+                now + UPLOAD_LEASE,
+            )
+            .await?;
+            if !renewed {
                 return Err::<(), Error>(Error::RustError("upload lease lost".into()));
             }
         }
@@ -287,8 +313,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
 async fn finish_attempt(env: &Env, id: &str, token: &str, stored: bool) -> Result<()> {
     // The request's put settled (or heartbeat lost); recovery still fences before releasing.
     let now = store::now();
-    env.d1("DB")?.prepare("UPDATE operations SET upload_state=?,status='pending',lease_token=NULL,lease_until=NULL,next_retry_at=?,updated_at=?,error_code=COALESCE(?,error_code) WHERE id=? AND upload_token=? AND lease_token=?")
-        .bind(&[(if stored{"stored"}else{"failed"}).into(),(now as f64).into(),(now as f64).into(),if stored{wasm_bindgen::JsValue::NULL}else{"UPLOAD_STREAM_OR_CHECKSUM_FAILED".into()},id.into(),token.into(),token.into()])?.run().await?;
+    store::uploads::finish_upload_attempt(&env.d1("DB")?, id, token, stored, now).await?;
     let _ = recovery::sync(env, id, false).await;
     Ok(())
 }

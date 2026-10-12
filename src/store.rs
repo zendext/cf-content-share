@@ -1,9 +1,21 @@
+mod models;
+pub mod operations;
+pub mod resources;
+pub mod sessions;
+pub mod uploads;
+pub use models::*;
+
 use crate::auth;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use worker::*;
+
+#[derive(Deserialize)]
+struct IdRow {
+    id: String,
+}
 
 pub fn now() -> i64 {
     (Date::now().as_millis() / 1000) as i64
@@ -51,109 +63,11 @@ pub fn fingerprint(value: &Value) -> String {
     hex::encode(Sha256::digest(value.to_string().as_bytes()))
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct Resource {
-    pub id: String,
-    pub kind: String,
-    pub state: String,
-    pub target_url: Option<String>,
-    pub title: String,
-    pub description: String,
-    pub tags: String,
-    pub created_at: i64,
-    pub deleted_at: Option<i64>,
-    pub file_key: Option<String>,
-    pub filename: Option<String>,
-    pub content_type: Option<String>,
-    pub size_bytes: Option<u64>,
-    pub sha256: Option<String>,
-    pub accounting: String,
-    pub retention_seconds: Option<i64>,
-    pub published_at: Option<i64>,
-    pub expires_at: Option<i64>,
-    pub deleted_reason: Option<String>,
-    pub expiration_policy_version: i64,
-}
-impl Resource {
-    pub fn expired(&self) -> bool {
-        self.expires_at.is_some_and(|time| time <= now())
-    }
-    pub fn unavailable_reason(&self) -> Option<&str> {
-        if self.state == "deleted" {
-            Some(if self.deleted_reason.as_deref() == Some("expired") {
-                "expired"
-            } else {
-                "deleted"
-            })
-        } else if self.expired() {
-            Some("expired")
-        } else if self.state != "published" {
-            Some("pending")
-        } else {
-            None
-        }
-    }
-    pub fn output(&self, env: &Env) -> Result<Value> {
-        let mut value = serde_json::to_value(self)?;
-        let unavailable_reason = self.unavailable_reason();
-        value["accessible"] = json!(unavailable_reason.is_none());
-        value["unavailable_reason"] = json!(unavailable_reason);
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("expiration_policy_version");
-        value["tags"] = serde_json::from_str(&self.tags)?;
-        value["share_url"] = json!(format!("{}/r/{}", env.var("PUBLIC_ORIGIN")?, self.id));
-        Ok(value)
-    }
-}
-pub async fn resource(env: &Env, id: &str) -> Result<Option<Resource>> {
-    // Non-session D1 bindings always use the primary, including with read replication enabled.
-    env.d1("DB")?
-        .prepare("SELECT * FROM resources WHERE id=?")
-        .bind(&[id.into()])?
-        .first(None)
-        .await
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct Operation {
-    pub id: String,
-    pub r#type: String,
-    pub resource_id: String,
-    pub fingerprint: String,
-    pub fingerprint_version: i64,
-    pub status: String,
-    pub kv_status: String,
-    pub error_code: Option<String>,
-    pub retry_count: i64,
-    pub total_attempts: i64,
-    pub next_retry_at: Option<i64>,
-    pub lease_token: Option<String>,
-    pub lease_until: Option<i64>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub upload_state: String,
-    pub upload_token: Option<String>,
-    pub r2_status: String,
-}
-impl Operation {
-    pub fn output(&self) -> Value {
-        json!({"operation_id":self.id,"type":self.r#type,"resource_id":self.resource_id,"status":self.status,"steps":{"d1":"completed","kv":self.kv_status,"upload":self.upload_state,"r2_cleanup":self.r2_status},"last_error":self.error_code.as_ref().map(|code| json!({"code":code,"step":match code.as_str(){"KV_SYNC_FAILED"=>"kv_sync","D1_PUBLISH_FAILED"=>"d1_publish","UPLOAD_ACTIVE"|"UPLOAD_STREAM_OR_CHECKSUM_FAILED"|"UPLOAD_REQUIRES_RETRANSMIT"=>"upload",_=>"r2_cleanup"},"retryable":!matches!(code.as_str(),"OBJECT_OWNERSHIP_MISMATCH"|"UPLOAD_STREAM_OR_CHECKSUM_FAILED"|"UPLOAD_REQUIRES_RETRANSMIT"),"message":"任务保留了当前步骤与最近错误；上传正文缺失时由客户端沿用原参数重传，其他未完成步骤可通过 operation.retry 重新安排。"})),"retry_count":self.retry_count,"total_attempts":self.total_attempts,"next_retry_at":self.next_retry_at,"created_at":self.created_at,"updated_at":self.updated_at})
-    }
-}
-pub async fn operation(env: &Env, id: &str) -> Result<Option<Operation>> {
-    env.d1("DB")?
-        .prepare("SELECT * FROM operations WHERE id=?")
-        .bind(&[id.into()])?
-        .first(None)
-        .await
-}
 pub async fn operation_result(env: &Env, id: &str) -> Result<Value> {
-    let Some(op) = operation(env, id).await? else {
+    let Some(op) = operations::get(&env.d1("DB")?, id).await? else {
         return Ok(failure("NOT_FOUND", "lookup", false));
     };
-    let resource = resource(env, &op.resource_id)
+    let resource = resources::get(&env.d1("DB")?, &op.resource_id)
         .await?
         .ok_or_else(|| Error::RustError("operation resource missing".into()))?;
     Ok(json!({"operation":op.output(),"resource":resource.output(env)?}))

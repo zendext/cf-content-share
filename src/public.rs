@@ -29,10 +29,10 @@ pub async fn snapshot(env: &Env, id: &str) -> Result<Option<Mapping>> {
     // before creating an irreversible expiration marker from that snapshot.
     for _ in 0..2 {
         let observed_at = store::now();
-        let Some(resource) = store::resource(env, id).await? else {
+        let Some(resource) = store::resources::get(&env.d1("DB")?, id).await? else {
             return Ok(None);
         };
-        if resource.state != "deleted"
+        if resource.state != store::ResourceState::Deleted
             && resource.expired()
             && resource.expires_at.is_some_and(|time| observed_at < time)
         {
@@ -41,13 +41,13 @@ pub async fn snapshot(env: &Env, id: &str) -> Result<Option<Mapping>> {
         return Ok(Some(Mapping {
             version: 1,
             expires_at: resource.expires_at,
-            state: if resource.state != "deleted" && resource.expired() {
+            state: if resource.state != store::ResourceState::Deleted && resource.expired() {
                 "expired".into()
             } else {
-                resource.state
+                resource.state.as_str().into()
             },
             id: resource.id,
-            kind: resource.kind,
+            kind: resource.kind.as_str().into(),
             target_url: resource.target_url,
             file_key: resource.file_key,
             filename: resource.filename,

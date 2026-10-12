@@ -1,6 +1,5 @@
 use crate::{auth, recovery, store};
 use serde_json::{Value, json};
-use wasm_bindgen::JsValue;
 use worker::*;
 
 pub async fn create(env: &Env, args: &Value) -> Result<Value> {
@@ -18,8 +17,8 @@ pub async fn create(env: &Env, args: &Value) -> Result<Value> {
     let (fingerprint, legacy_fingerprint) = store::creation_fingerprints(&mut metadata);
     let db = env.d1("DB")?;
     for _ in 0..5 {
-        if let Some(op) = store::operation(env, id).await? {
-            return if op.r#type == "resource.create_url"
+        if let Some(op) = store::operations::get(&env.d1("DB")?, id).await? {
+            return if op.r#type == store::OperationType::CreateUrl
                 && (if op.fingerprint_version == 0 {
                     legacy_fingerprint.as_ref() == Some(&op.fingerprint)
                 } else {
@@ -34,19 +33,18 @@ pub async fn create(env: &Env, args: &Value) -> Result<Value> {
             return Ok(store::failure("INVALID_ARGUMENTS", "validation", false));
         }
         let resource_id = store::resource_id()?;
-        let now = store::now() as f64;
-        let result = db.batch(vec![
-            db.prepare("INSERT INTO resources(id,kind,state,target_url,title,description,tags,created_at,expiration_policy_version,retention_seconds) VALUES(?,'url','published',?,?,?,?,?,1,?)")
-                .bind(&[resource_id.clone().into(), metadata["target_url"].as_str().unwrap().into(), metadata["title"].as_str().unwrap().into(), metadata["description"].as_str().unwrap().into(), metadata["tags"].to_string().into(), now.into(), metadata["retention_seconds"].as_i64().map(|n| JsValue::from(n as f64)).unwrap_or(JsValue::NULL)])?,
-            db.prepare("INSERT INTO operations(id,type,resource_id,fingerprint,created_at,updated_at,next_retry_at,fingerprint_version) VALUES(?,'resource.create_url',?,?,?,?,?,1)")
-                .bind(&[id.into(), resource_id.clone().into(), fingerprint.clone().into(), now.into(), now.into(), now.into()])?,
-        ]).await;
+        let now = store::now();
+        let result =
+            store::resources::create_url(&db, id, &resource_id, &metadata, &fingerprint, now).await;
         if let Err(error) = result {
             // Unique operation races roll the entire batch back. Query before deciding to retry.
-            if store::operation(env, id).await?.is_some() {
+            if store::operations::get(&env.d1("DB")?, id).await?.is_some() {
                 continue;
             }
-            if store::resource(env, &resource_id).await?.is_some() {
+            if store::resources::get(&env.d1("DB")?, &resource_id)
+                .await?
+                .is_some()
+            {
                 continue;
             }
             return Err(error);
@@ -59,24 +57,19 @@ pub async fn create(env: &Env, args: &Value) -> Result<Value> {
 }
 
 pub async fn get(env: &Env, id: &str) -> Result<Value> {
-    let Some(resource) = store::resource(env, id).await? else {
+    let Some(resource) = store::resources::get(&env.d1("DB")?, id).await? else {
         return Ok(store::failure("NOT_FOUND", "lookup", false));
     };
-    let op = env
-        .d1("DB")?
-        .prepare("SELECT * FROM operations WHERE resource_id=? ORDER BY sequence DESC LIMIT 1")
-        .bind(&[id.into()])?
-        .first::<store::Operation>(None)
-        .await?;
+    let op = store::operations::latest_for_resource(&env.d1("DB")?, id).await?;
     Ok(json!({"resource":resource.output(env)?,"operation":op.map(|op|op.output())}))
 }
 
 pub async fn update(env: &Env, args: &Value, delete: bool) -> Result<Value> {
     let id = args["resource_id"].as_str().unwrap();
-    let Some(resource) = store::resource(env, id).await? else {
+    let Some(resource) = store::resources::get(&env.d1("DB")?, id).await? else {
         return Ok(store::failure("NOT_FOUND", "lookup", false));
     };
-    if resource.state == "deleted" {
+    if resource.state == store::ResourceState::Deleted {
         return if delete {
             get(env, id).await
         } else {
@@ -97,36 +90,24 @@ pub async fn update(env: &Env, args: &Value, delete: bool) -> Result<Value> {
     if !delete && args.as_object().unwrap().len() == 1 {
         return Ok(store::failure("INVALID_ARGUMENTS", "validation", false));
     }
-    if !delete && args.get("target_url").is_some() && resource.kind != "url" {
+    if !delete && args.get("target_url").is_some() && resource.kind != store::ResourceKind::Url {
         return Ok(store::failure("IMMUTABLE_FILE", "update", false));
     }
     let db = env.d1("DB")?;
     let operation_id = auth::random_token()?;
-    let now = store::now() as f64;
-    let statement = if delete {
-        db.prepare("UPDATE resources SET state='deleted', target_url=NULL, description='', tags='[]', deleted_at=?, deleted_reason='manual', accounting=CASE WHEN accounting='published' THEN 'cleanup' ELSE accounting END WHERE id=? AND state IN ('pending','published')")
-            .bind(&[now.into(), id.into()])?
-    } else {
-        let optional = |key: &str| {
-            args[key]
-                .as_str()
-                .map(JsValue::from)
-                .unwrap_or(JsValue::NULL)
-        };
-        db.prepare("UPDATE resources SET target_url=COALESCE(?,target_url), title=COALESCE(?,title), description=COALESCE(?,description), tags=COALESCE(?,tags), expires_at=CASE WHEN ? THEN ? ELSE expires_at END WHERE id=? AND state='published' AND (expires_at IS NULL OR expires_at>unixepoch()) AND (? IS NULL OR ?>unixepoch())")
-            .bind(&[optional("target_url"), optional("title"), optional("description"), args.get("tags").map(|tags| JsValue::from(tags.to_string())).unwrap_or(JsValue::NULL), args.get("expires_at").is_some().into(), args["expires_at"].as_i64().map(|n| JsValue::from(n as f64)).unwrap_or(JsValue::NULL), id.into(), args["expires_at"].as_i64().map(|n| JsValue::from(n as f64)).unwrap_or(JsValue::NULL), args["expires_at"].as_i64().map(|n| JsValue::from(n as f64)).unwrap_or(JsValue::NULL)])?
-    };
-    db.batch(vec![statement,
-        db.prepare("INSERT INTO operations(id,type,resource_id,fingerprint,created_at,updated_at,next_retry_at,r2_status) SELECT ?,?,?,?,?,?,?,? WHERE changes()>0")
-            .bind(&[operation_id.clone().into(), (if delete {"resource.delete"} else {"resource.update"}).into(), id.into(), store::fingerprint(args).into(), now.into(), now.into(), now.into(), (if delete && resource.kind!="url" {"pending"} else {"none"}).into()])?,
-    ]).await?;
-    if store::operation(env, &operation_id).await?.is_none() {
+    let now = store::now();
+    store::resources::update_with_operation(&db, args, &resource, &operation_id, delete, now)
+        .await?;
+    if store::operations::get(&env.d1("DB")?, &operation_id)
+        .await?
+        .is_none()
+    {
         if delete {
             return get(env, id).await;
         }
-        let current = store::resource(env, id).await?;
+        let current = store::resources::get(&env.d1("DB")?, id).await?;
         let code = match current {
-            Some(resource) if resource.state == "deleted" => "RESOURCE_DELETED",
+            Some(resource) if resource.state == store::ResourceState::Deleted => "RESOURCE_DELETED",
             Some(resource) if resource.expired() => "RESOURCE_EXPIRED",
             Some(_) => "INVALID_ARGUMENTS",
             None => "NOT_FOUND",
@@ -148,72 +129,14 @@ pub async fn list(env: &Env, args: &Value, operations: bool) -> Result<Value> {
         Err(_) => return Ok(store::failure("INVALID_CURSOR", "pagination", false)),
     };
     let limit = args["limit"].as_u64().unwrap_or(20) as usize;
-    let mut sql = if operations {
-        "SELECT * FROM operations WHERE 1=1"
-    } else {
-        "SELECT * FROM resources WHERE state='published' AND (expires_at IS NULL OR expires_at>unixepoch())"
+    if !operations
+        && let (Some(from), Some(to)) = (args["created_from"].as_u64(), args["created_to"].as_u64())
+        && from >= to
+    {
+        return Ok(store::failure("INVALID_TIME_RANGE", "validation", false));
     }
-    .to_string();
-    let mut bindings: Vec<JsValue> = Vec::new();
-    for key in if operations {
-        &["status", "resource_id"][..]
-    } else {
-        &["kind"][..]
-    } {
-        if let Some(value) = args[key].as_str() {
-            sql.push_str(&format!(" AND {key}=?"));
-            bindings.push(value.into());
-        }
-    }
-    if !operations {
-        if let Some(keyword) = args["keyword"].as_str() {
-            let escaped = keyword
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_");
-            let pattern = format!("%{escaped}%");
-            sql.push_str(" AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR filename LIKE ? ESCAPE '\\')");
-            bindings.extend([
-                pattern.clone().into(),
-                pattern.clone().into(),
-                pattern.into(),
-            ]);
-        }
-        if let Some(filename) = args["filename"].as_str() {
-            sql.push_str(" AND filename=?");
-            bindings.push(filename.into());
-        }
-        if let Some(tags) = args["tags"].as_array() {
-            for tag in tags {
-                sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(resources.tags) WHERE value=?)");
-                bindings.push(tag.as_str().unwrap().into());
-            }
-        }
-        if let (Some(from), Some(to)) = (args["created_from"].as_u64(), args["created_to"].as_u64())
-            && from >= to
-        {
-            return Ok(store::failure("INVALID_TIME_RANGE", "validation", false));
-        }
-        for (key, comparison) in [("created_from", ">="), ("created_to", "<")] {
-            if let Some(time) = args[key].as_u64() {
-                sql.push_str(&format!(" AND created_at{comparison}?"));
-                bindings.push((time as f64).into());
-            }
-        }
-    }
-    if let Some((time, id)) = cursor {
-        sql.push_str(" AND (created_at<? OR (created_at=? AND id<?))");
-        bindings.extend([(time as f64).into(), (time as f64).into(), id.into()]);
-    }
-    sql.push_str(" ORDER BY created_at DESC,id DESC LIMIT ?");
-    bindings.push(((limit + 1) as f64).into());
-    let mut rows = env
-        .d1("DB")?
-        .prepare(sql)
-        .bind(&bindings)?
-        .all()
-        .await?
-        .results::<Value>()?;
+    let mut rows =
+        store::resources::list_rows(&env.d1("DB")?, args, operations, cursor, limit).await?;
     let has_more = rows.len() > limit;
     rows.truncate(limit);
     let next = if has_more {

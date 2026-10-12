@@ -73,4 +73,4 @@ Documentation impact：README 增加安装、依赖、入口和退出码说明�
 
 两项新增回归在修改前分别复现 HTTP 400 和协商到旧版，修改后均通过；覆盖两版本的握手、通知、工具发现／调用、未知版本边界，以及官方 SDK 1.32.1 的新版协商和后续请求头。首轮 79 项测试有 1 项原有上传重发测试出现 HTTP 200 响应读取失败，该用例单独复跑及完整 79 项重跑均通过，间歇性原因未定位。发布前重新执行完整 `npm run check`，Rust fmt、Wasm Clippy、构建及 79/79 项测试均通过；正式配置 dry-run 通过。
 
-北京时间 2026-10-12 02:14，代码提交 `ea79c58` 部署为 Worker version `00000000-0000-0000-0000-000000000001`，部署列表回读确认 100% 流量；回滚基线为 `00000000-0000-0000-0000-000000000001`。发布前 D1 备份保存在仓库外，迁移检查无待执行项；pending/running/retry_pending 操作均为空，本次不变更数据模型、绑定或 Cron。部署后现有 Codex MCP 的 describe、storage.get 成功，容量计数为 0；无认证请求仍返回 401 与 OAuth challenge，两条已删除测试链接仍为 404。新版握手的直接证据来自本地 workerd／官方 SDK；Hermes 原生端须重新连接以退出 parked，其 OAuth 和自动连接成功尚未独立实测。
+北京时间 2026-10-12 02:14，代码提交 `ea79c58` 部署为 Worker version `<redacted-resource-id>`，部署列表回读确认 100% 流量；回滚基线为 `<redacted-resource-id>`。发布前 D1 备份保存在仓库外，迁移检查无待执行项；pending/running/retry_pending 操作均为空，本次不变更数据模型、绑定或 Cron。部署后现有 Codex MCP 的 describe、storage.get 成功，容量计数为 0；无认证请求仍返回 401 与 OAuth challenge，两条已删除测试链接仍为 404。新版握手的直接证据来自本地 workerd／官方 SDK；Hermes 原生端须重新连接以退出 parked，其 OAuth 和自动连接成功尚未独立实测。

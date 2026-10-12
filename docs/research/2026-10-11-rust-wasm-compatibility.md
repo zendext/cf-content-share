@@ -1,5 +1,7 @@
 # Rust/Wasm、MCP、Access JWT 与流式 R2 兼容性实验
 
+> 隐私说明：域名、团队名、部署资源 ID、测试资源标识与私有路径已脱敏；示例值不指向原验收环境，历史结果保留。
+
 - 状态：历史实验记录。2026-10-11 正式服务接管后，原型代码、云端资源与本地临时文件已按用户要求删除；下文按发生顺序保留当时观察，不是当前部署指引。
 - 日期：2026-10-11。
 - 执行者：Codex。
@@ -106,7 +108,7 @@ npx wrangler r2 bucket dev-url get cf-content-share-compat
 npx wrangler r2 bucket domain list cf-content-share-compat
 ```
 
-实际结果：R2 Standard bucket `cf-content-share-compat` 创建成功；D1 ID 为 `00000000-0000-0000-0000-000000000001`，平台选择 WNAM；`0001_compat.sql` 远端执行成功。R2 的 `r2.dev` 为 disabled，没有自定义域名。创建与迁移命令退出码均为 0，未报告失败数。
+实际结果：R2 Standard bucket `cf-content-share-compat` 创建成功；D1 ID 为 `<redacted-resource-id>`，平台选择 WNAM；`0001_compat.sql` 远端执行成功。R2 的 `r2.dev` 为 disabled，没有自定义域名。创建与迁移命令退出码均为 0，未报告失败数。
 
 再次执行远端迁移显示无待应用迁移；SQL 回读确认 `upload_sessions`、`uploads` 两张表及迁移登记，业务表均为 0 行。该证据确认资源初始化与迁移，不代表云端 Worker 上传链路已运行。
 
@@ -123,9 +125,9 @@ POST /accounts/<account_id>/access/organizations
 
 返回 201；GET 回读返回 200，组织名和 auth_domain 一致，`deny_unmatched_requests=false`。此前 GET 返回 `Access is not enabled` 只能证明当时组织未启用，不能据此判断必须由用户手动开户；实际 POST 已证实可以 API 初始化。
 
-IdP 列表初始为空，随后创建 Cloudflare 身份提供方，ID `00000000-0000-0000-0000-000000000001`，`restrict_to_account_members=true`。创建 self-hosted Access 应用 `00000000-0000-0000-0000-000000000001`，domain 为 `share.example.com/mcp`；唯一 allow 策略包含用户指定的一个邮箱。邮箱未写入仓库文档。API 回读核对了 domain、audience、IdP、Managed OAuth 及完整准入规则。
+IdP 列表初始为空，随后创建 Cloudflare 身份提供方，ID `<redacted-resource-id>`，`restrict_to_account_members=true`。创建 self-hosted Access 应用 `<redacted-resource-id>`，domain 为 `share.example.com/mcp`；唯一 allow 策略包含用户指定的一个邮箱。邮箱未写入仓库文档。API 回读核对了 domain、audience、IdP、Managed OAuth 及完整准入规则。
 
-OAuth 配置启用 localhost 和 127.0.0.1 动态注册，Access Token 15 分钟，授权会话 24 小时。部署前查询该域名没有现有 DNS 记录或 Worker 域名绑定，然后执行 Wrangler dry-run 和 deploy，均退出码 0。部署版本为 `00000000-0000-0000-0000-000000000001`，自定义域名 `share.example.com`，workers.dev/预览 URL 均关闭；启动时间报告为 8 ms。
+OAuth 配置启用 localhost 和 127.0.0.1 动态注册，Access Token 15 分钟，授权会话 24 小时。部署前查询该域名没有现有 DNS 记录或 Worker 域名绑定，然后执行 Wrangler dry-run 和 deploy，均退出码 0。部署版本为 `<redacted-resource-id>`，自定义域名 `share.example.com`，workers.dev/预览 URL 均关闭；启动时间报告为 8 ms。
 
 云端 HTTP 实测（Node 22 fetch）：
 
@@ -164,9 +166,9 @@ OAuth 配置启用 localhost 和 127.0.0.1 动态注册，Access Token 15 分钟
 | `session.revoke` 后使用旧 Token | HTTP 401，UNAUTHORIZED |
 | 撤销应用会话后再次调用 MCP echo | 仍成功，符合两类凭据独立的设计 |
 
-32 MiB 文件为 33,554,432 字节，客户端以 64 KiB 块生成本地文件，再用 `fs.createReadStream` 构造固定 Content-Length 的 multipart 请求。云端报告 8194 个 file chunk、最大 chunk 5618 字节、Wasm 线性内存 1,310,720 字节；SHA-256 为 `edeadec8f638055689d5be63b4bcf2654fb64bf91fb6651e9a924f052a9c7db0`。这证明本次云端流式路径及 R2 原生摘要校验可工作，内存数字仅涵盖 Wasm 线性内存，不代表 Worker 总 RSS 或 CPU 用量。
+32 MiB 文件为 33,554,432 字节，客户端以 64 KiB 块生成本地文件，再用 `fs.createReadStream` 构造固定 Content-Length 的 multipart 请求。云端报告 8194 个 file chunk、最大 chunk 5618 字节、Wasm 线性内存 1,310,720 字节；SHA-256 为 `<test-file-sha256>`。这证明本次云端流式路径及 R2 原生摘要校验可工作，内存数字仅涵盖 Wasm 线性内存，不代表 Worker 总 RSS 或 CPU 用量。
 
-一次性验证程序为 `<private-test-dir>/check.mjs`，非敏感结果为同目录 `results.json`，运行退出码 0，所有断言通过。应用 Token 只写入 0600 的临时文件，测试后已撤销并删除该文件。32 MiB 测试对象及其 D1 记录已按精确 ID 删除，清理后公开 URL 为 404。保留 59 字节测试样例用于人工回读，resource_id 为 `example-resource-id`；其 SHA-256 为 `90ce5cb04387709127206b95b98f667b93a67a302f114d4b17dfe96b00dd3040`。失败上传的非敏感 D1 记录和已撤销会话记录保留为证据。
+一次性验证程序为 `<private-test-dir>/check.mjs`，非敏感结果为同目录 `results.json`，运行退出码 0，所有断言通过。应用 Token 只写入 0600 的临时文件，测试后已撤销并删除该文件。32 MiB 测试对象及其 D1 记录已按精确 ID 删除，清理后公开 URL 为 404。保留 59 字节测试样例用于人工回读，resource_id 为 `<test-resource-id>`；其 SHA-256 为 `<test-file-sha256>`。失败上传的非敏感 D1 记录和已撤销会话记录保留为证据。
 
 本轮未等待 15 分钟访问令牌到期，未触发并确认 OAuth refresh_token 流程，也未测试 OAuth 撤销或 Hermes。24 小时应用 Token 到期仍只有此前本地测试证据。Codex 本轮没有遇到 Python 默认 UA 的 1010 问题。
 
@@ -218,8 +220,8 @@ Cloudflare API 回读 `share.example.com` 为 Custom Domain 管理的 proxied AA
 | 项目 | 切换后状态 |
 | --- | --- |
 | Custom Domain | 已移除，`workers/domains` 中不再存在 share.example.com |
-| Worker Route | `share.example.com/*` → `cf-content-share-compat`；ID `00000000000000000000000000000000`；request_limit_fail_open=false |
-| DNS | CNAME `share.example.com` → `edge.example.net`，proxied=false，TTL 60；ID `00000000000000000000000000000000` |
+| Worker Route | `share.example.com/*` → `cf-content-share-compat`；ID `<redacted-resource-id>`；request_limit_fail_open=false |
+| DNS | CNAME `share.example.com` → `edge.example.net`，proxied=false，TTL 60；ID `<redacted-resource-id>` |
 | 优选入口 | 本次 cf-entry A 记录为 `192.0.2.1`，不将其写死在部署配置 |
 | Access | 应用 domain、aud、策略、IdP 和 OAuth 配置与切换前快照逐项相等 |
 | Worker | 代码版本未变；workers.dev 和预览入口保持关闭 |
@@ -240,7 +242,7 @@ Cloudflare 和 Google 的 HTTPS DNS 查询均返回 `share.example.com CNAME edg
 | 优选 IP：错误摘要 | 422；Desktop 查询上传状态为 failed |
 | 优选 IP：撤销应用会话后再次上传 | 401/UNAUTHORIZED |
 
-32 MiB 上传报告 8195 个 file chunk、最大 chunk 5774 字节、Wasm 线性内存 1,310,720 字节。SHA-256 为 `edeadec8f638055689d5be63b4bcf2654fb64bf91fb6651e9a924f052a9c7db0`。测试程序 `route-trial/check.mjs` 及非敏感结果 `results.json` 保存在本地忽略目录，退出码 0，全部断言通过。应用 Token 已撤销，0600 临时 Token 文件已删除。32 MiB R2 对象及精确匹配的 D1 记录已清理；保留 59 字节样例及失败记录。新样例 resource_id 为 `example-resource-id`。
+32 MiB 上传报告 8195 个 file chunk、最大 chunk 5774 字节、Wasm 线性内存 1,310,720 字节。SHA-256 为 `<test-file-sha256>`。测试程序 `route-trial/check.mjs` 及非敏感结果 `results.json` 保存在本地忽略目录，退出码 0，全部断言通过。应用 Token 已撤销，0600 临时 Token 文件已删除。32 MiB R2 对象及精确匹配的 D1 记录已清理；保留 59 字节样例及失败记录。新样例 resource_id 为 `<test-resource-id>`。
 
 最终本机 DNS 缓存刷新后，`dns.lookup` 返回 `192.0.2.1`；未固定 IP 的 Node fetch 探针与小样例下载均为 200，已清理大文件及摘要失败资源为 404。此后再启动一个全新 Codex app-server 进程，使用正常系统 DNS 和刚登录保存的凭据，认证工具发现再次通过。云端 API 最终回读确认 CNAME/Route 正确、Custom Domain 不存在、workers.dev/preview 设置与原快照一致。上述验证退出码均为 0。
 

@@ -56,7 +56,7 @@ Documentation impact：更新部署文档、实现进度及本台账，解除已
 
 用户进一步授权复用当前 Token 配置统计 Secret、发布到 `share.example.com` 并 commit + push。正式主 Route 已接管，两个已有原型链接用更具体的 Route 保留；原型 D1/R2 和 DNS 未清空或改写。真实 AE 暴露 ORDER BY 使用源列的 422，主 Agent 通过源列／输出别名单变量对照确认根因，先增加失败回归，再修复四处排序，完整检查 70/70 通过后重新发布。
 
-最终版本 `00000000-0000-0000-0000-000000000001` 已通过 Desktop MCP、真实 PKCE 登录、显式及 401 自动刷新、refresh 撤销与 30 秒后 access 401、32 MiB 上传／摘要／Range／SVG、会话撤销、容量释放、五种统计视图与样本分页。本轮全部 5 次访问在验收启动后 121 秒可见。具体边界及备份见[云端验收](../research/2026-10-11-formal-cloud-acceptance.md)。
+最终版本 `<redacted-resource-id>` 已通过 Desktop MCP、真实 PKCE 登录、显式及 401 自动刷新、refresh 撤销与 30 秒后 access 401、32 MiB 上传／摘要／Range／SVG、会话撤销、容量释放、五种统计视图与样本分页。本轮全部 5 次访问在验收启动后 121 秒可见。具体边界及备份见[云端验收](../research/2026-10-11-formal-cloud-acceptance.md)。
 
 ## 原型退役与 Desktop 更名
 

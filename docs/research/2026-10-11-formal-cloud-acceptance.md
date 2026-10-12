@@ -1,10 +1,12 @@
 # 正式服务云端发布与验收
 
+> 隐私说明：域名、团队名、部署资源 ID、测试资源标识与私有路径已脱敏；示例值不指向原验收环境，历史结果保留。
+
 > 后续状态：同日按用户要求完全删除原型环境和代码，旧链接不再保留；Desktop MCP 已更名为 `cf-content-share` 并实际验证调用。下面的旧链接保留与回退说明仅记录发布当时的实验，现已失效；当前操作见[部署文档](../deployment.md)。
 
 - 日期：2026-10-11；Cloudflare 时间为 UTC。
 - 目标：`https://share.example.com`，Rust/Wasm 正式 Worker `cf-content-share`。
-- 最终部署版本：`00000000-0000-0000-0000-000000000001`；首发代码基线 `099e140`，最终版本包含本次 AE 查询排序修复。
+- 最终部署版本：`<redacted-resource-id>`；首发代码基线 `099e140`，最终版本包含本次 AE 查询排序修复。
 - 范围：Cloudflare Access Managed OAuth、Desktop MCP、官方 MCP SDK、D1/KV/R2、Analytics Engine 与优选入口。
 
 ## 发布配置及旧链接
@@ -51,7 +53,7 @@ Desktop 现有连接仍以本地别名 `cf-content-share-compat` 展示，但请
 | 历史元数据 | Desktop 查询已删除测试资源，仍返回历史计数与 `resource.state=deleted` |
 | 清理 | 三轮验收的测试资源均逻辑删除，上传会话撤销；最后一轮的三个公开 URL 均为 404；保留必要墓碑与操作记录 |
 
-最终验收资源为 `example-resource-id`（URL）、`example-resource-id`（32 MiB 文件）、`example-resource-id`（SVG），现在均为删除状态。32 MiB 正文 SHA-256 为 `371036ccdfc733fa30542a26a4f276536147c906d1570f0becc1d6f8b868c311`。本地原始报告和备份保留在上述私有 release 目录；没有保存 OAuth 或上传 Token 明文。
+最终验收资源为 `<test-resource-id>`（URL）、`<test-resource-id>`（32 MiB 文件）、`<test-resource-id>`（SVG），现在均为删除状态。32 MiB 正文 SHA-256 为 `<test-file-sha256>`。本地原始报告和备份保留在上述私有 release 目录；没有保存 OAuth 或上传 Token 明文。
 
 ## 证据边界
 

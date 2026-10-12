@@ -2,9 +2,33 @@
 
 本文对应根目录正式工程；资源初始化 CLI 已有模拟 Cloudflare API 回归，真实资源创建、正式 Worker 发布与云端验收应分别记录。原型的验证不能替代正式服务验收。全部命令从项目根目录运行；原型代码和环境已删除。
 
+## 0. Agent 按提示词部署
+
+README 的[安装提示词](../README.md#让-agent-安装)授权 Agent 执行本项目部署。它使用现有 CLI 与 Cloudflare API 组合完成；`init-cloud.mjs` 自身不会创建 DNS 或 Access。
+
+1. 从用户提供的账户 ID、域名、准入邮箱、团队名和私有 Token 文件开始。用 `scripts/init-cloud.mjs` 的 `readToken` 读取凭据，在进程内通过 HTTPS Authorization header 调用固定的 Cloudflare API；不要把 Token 放进 shell 参数、打印原始响应或读取 Agent 的 OAuth 凭据文件。先回读目标 Zone、DNS、Workers、Access 组织／IdP／应用与资源列表，确认归属；403 不能当作资源不存在。
+2. 复用现有 Zero Trust 组织。不存在时按用户提供的团队名创建；已有组织不得更名或重建。复用合适的 Cloudflare IdP，缺失时创建 `type=cloudflare` 且 `restrict_to_account_members=true` 的 IdP。本人准入邮箱须属于该 Cloudflare 账户；不符合时让用户提供可用身份，不自动放宽策略。按第 3 节配置仅保护 `/mcp` 的 self-hosted 应用、本人邮箱 Allow、Managed OAuth 和本地回调，读取 issuer 与 AUD。遇到重叠应用或不匹配的准入策略，先报告冲突，不覆盖其他应用。
+3. 新分享子域名默认使用 proxied AAAA `100::` 与本项目生成的 `host/*` Worker Route。DNS 不存在时创建；若已有兼容记录则复用。已有不同目标、其他 Worker Route 或 Custom Domain 时报告冲突，不直接接管。公开 `/r/*`、`/upload` 与 OAuth 发现路径不能被整站 Access 登录规则拦截。
+4. 检查并安装缺少的工具链与依赖，按下方步骤生成私有配置；先执行初始化只读计划，核对后 `--apply`。运行检查、dry-run 和 D1 迁移，按提示词选择单 Token 或用户另行提供的只读统计 Token，写入 `ANALYTICS_API_TOKEN` 后发布。不要创建新 API Token、购买套餐或重置现有数据；平台要求本人开通服务时报告具体缺项。
+5. 回读 binding、Route、Secret 名称、Access 策略和 Cron，连接用户指定的 MCP 客户端并安装分享 Skill。浏览器 OAuth 登录交给用户，不索取密码或伪造用户登录。先发现客户端实际配置方式，不覆盖同名的其他连接。
+6. 按第 6 节验证登录、匿名短链、上传下载摘要、统计与拒绝路径；清理本轮创建的测试资源和上传会话。报告实际通过与未验证项，不把 deploy 成功当作端到端验收。
+
+Cloudflare API 参考：[组织](https://developers.cloudflare.com/api/resources/zero_trust/subresources/organizations/)、[身份提供方](https://developers.cloudflare.com/api/resources/zero_trust/subresources/identity_providers/)、[Access 应用](https://developers.cloudflare.com/api/resources/zero_trust/subresources/access/subresources/applications/)、[DNS 记录](https://developers.cloudflare.com/api/resources/dns/subresources/records/)、[Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/)。这些写操作需要 README 权限表中的 DNS 和两项 Access 编辑权限；手动配置时可省去它们。此编排文档经过代码和 API 契约核对，尚未在全新账户上端到端执行。
+
 ## 1. 配置和部署身份
 
-安装仓库 README 指定的 Rust、Wasm target、worker-build 和 Node.js，并执行 `npm ci`。Wrangler 版本由 lockfile 固定。
+先克隆本仓库并进入根目录。需要 Node.js 22+、Rust stable（支持 edition 2024）及 rustup；Wrangler 版本由 lockfile 固定。新环境执行：
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+export CARGO_TARGET_DIR="$PWD/target"
+rustup target add wasm32-unknown-unknown
+cargo install worker-build --version 0.8.7 --locked
+npm ci
+umask 077
+```
+
+分享域名需已接入 Cloudflare，账户需具备 Workers、D1、KV、R2、Analytics Engine 和 Zero Trust 使用权限。手动安装先按第 3 节建立 Access 应用、取得 issuer 和 AUD，并准备目标域名的 proxied DNS；Agent 可按第 0 节完成这些 API 操作。
 
 ```sh
 cp deployment.example.json deployment.local.json
@@ -25,7 +49,7 @@ chmod 600 deployment.local.json
 | `default_timezone` | 默认 `Asia/Shanghai`；使用 IANA 时区，不支持 `+08:00` 这类偏移表达 |
 | `max_file_bytes` / `total_storage_bytes` | 可选非负十进制整数字符串，最大 `9007199254740991`；`"0"` 表示明确设为零；省略表示不设产品容量上限 |
 
-首次安装的完整 Token 权限表和单 Token 命令见 [README](../README.md#1-创建-cloudflare-api-token)。初始化身份需在目标账户拥有 D1、Workers KV Storage、Workers R2 Storage 的读取权限；`--apply` 创建资源还需相应编辑权限。部署另外需要 Workers Scripts 编辑、目标 Zone 的 Workers Routes 编辑及 Zone 读取；Analytics Engine 通过 Worker binding 写入，SQL 查询需要 Account Analytics 读取。CLI 不配置 DNS 或 Access，因此此手动流程无需给 Token 添加这些写权限。账户资源列表操作使用目标账户范围，不能用仅对象读写的 R2 S3 凭据代替 Cloudflare API Token。
+首次安装的完整 Token 权限表见 [README](../README.md#token-权限)。初始化身份需在目标账户拥有 D1、Workers KV Storage、Workers R2 Storage 的读取权限；`--apply` 创建资源还需相应编辑权限。部署另外需要 Workers Scripts 编辑、目标 Zone 的 Workers Routes 编辑及 Zone 读取；Analytics Engine 通过 Worker binding 写入，SQL 查询需要 Account Analytics 读取。CLI 不配置 DNS 或 Access；如果由 Agent 通过 API 配置它们，必须添加 README 中对应的写权限。账户资源列表操作使用目标账户范围，不能用仅对象读写的 R2 S3 凭据代替 Cloudflare API Token。
 
 凭据从 `CLOUDFLARE_API_TOKEN` 读取，或显式传 `--token-file /private/cloudflare-api-token`。文件必须是普通文件、权限 `0600`，内容仅为 Token；CLI 不打印其内容，不接受 `--token <value>`。Token 文件放在仓库外。Wrangler 自身使用 `CLOUDFLARE_API_TOKEN` 或 `wrangler login` 的身份；CLI 的 `--token-file` 不会替 Wrangler 保存登录状态。
 
@@ -50,7 +74,7 @@ Analytics Engine 没有这里需要调用的建库 API：CLI 只生成 `ANALYTIC
 
 ## 3. Access 与 Managed OAuth 一次性配置
 
-已有 `share.example.com/mcp` 应用应复用：团队 issuer 为 `https://example-team.cloudflareaccess.com`，应用显示名为 `cf-content-share MCP`，audience 以本地 `deployment.local.json` 及控制台回读为准。不要为正式 Worker 再建一个覆盖相同路径的 Access 应用。本人邮箱不写入仓库；检查现有应用只有本人能通过，而不只是“所有 Cloudflare 账户成员”。
+已有同域名 `/mcp` 应用时先核对并复用，从控制台或 API 取得实际团队 issuer 与 audience。不要创建覆盖相同路径的重复应用。本人邮箱只用于云端准入策略，不写入仓库；检查只有本人能通过，而不只是“所有 Cloudflare 账户成员”。
 
 新安装在 Cloudflare Dashboard 完成以下步骤：
 
@@ -65,6 +89,25 @@ Analytics Engine 没有这里需要调用的建库 API：CLI 只生成 `ANALYTIC
 ## 4. 迁移、Secrets 与发布
 
 下面操作会修改云端状态，应在核对计划、数据库名和目标域名后单独执行。首次安装使用初始化入口生成的正式资源绑定。
+
+使用一个 Token 的完整命令如下，在 Bash / Zsh 逐步执行；不要开启 `set -x`。DNS 和 Access 须已配置。`read` 时粘贴 Token 后按回车，不将明文放入命令历史：
+
+```sh
+read -r -s CLOUDFLARE_API_TOKEN
+export CLOUDFLARE_API_TOKEN
+npm run init:cloud -- --config deployment.local.json
+npm run init:cloud -- --config deployment.local.json --apply
+npm run check
+npx wrangler deploy --dry-run --config wrangler.cloud.json
+npx wrangler d1 migrations apply DB --remote --config wrangler.cloud.json
+printf '%s' "$CLOUDFLARE_API_TOKEN" | npx wrangler secret put ANALYTICS_API_TOKEN --config wrangler.cloud.json
+npx wrangler deploy --config wrangler.cloud.json
+unset CLOUDFLARE_API_TOKEN
+```
+
+使用 Token 文件的 Agent 也须在运行 Wrangler 的子进程环境中设置 `CLOUDFLARE_API_TOKEN`，向 `secret put` 的标准输入传入选定统计 Token；`--token-file` 只对初始化 CLI 生效。单 Token 方案使运行时 Secret 也拥有部署写权限；下方说明如何改用独立只读统计 Token。
+
+分步核查与独立统计 Token 的操作如下：
 
 ```sh
 npm run test:deployment
@@ -97,7 +140,7 @@ npx wrangler deploy --config wrangler.cloud.json
 
 首次 `secret put` 若目标 Worker 不存在，Wrangler 会要求创建占位 Worker；先核对名字，再完成正式 deploy。记录 Worker version ID、Git commit 和迁移列表。`SELECT 1` 通过只证明 SQL 查询身份可用；首次公开访问产生事件之后，还需通过 MCP 统计查询核对 dataset、事件和时区。不要把 Secret 写入 `vars`、输入配置、命令参数或日志。
 
-Route 固定生成为 `{ "pattern": "<host>/*", "zone_name": "<zone>" }`，不使用 `custom_domain`。DNS 独立维护。当前 `share.example.com` 是灰云 CNAME → `edge.example.net`，唯一主 Route 指向 `cf-content-share`，原型旧链接 Route 已移除；初始化不得替换、橙云化或删除此 DNS。现有组合是[实验记录](research/2026-10-11-rust-wasm-compatibility.md)中的实测状态；[官方 Route 文档](https://developers.cloudflare.com/workers/configuration/routing/routes/)仍要求 proxied DNS，不能把当前实测推广为平台长期保证。新域名按所选入口方案单独验收。
+Route 固定生成为 `{ "pattern": "<host>/*", "zone_name": "<zone>" }`，不使用 `custom_domain`。DNS 独立维护。新安装按官方要求准备 proxied DNS；无源站专用子域名可用 AAAA `100::` 占位。已有安装若采用自定义入口，先核对其现状，不直接替换 DNS。曾验证过的灰云 CNAME 组合是[实验记录](research/2026-10-11-rust-wasm-compatibility.md)中的实测状态；[官方 Route 文档](https://developers.cloudflare.com/workers/configuration/routing/routes/)仍要求 proxied DNS，不能把当前实测推广为平台长期保证。新域名按所选入口方案单独验收。
 
 ## 5. 正式版本升级
 

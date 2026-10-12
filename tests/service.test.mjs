@@ -4,6 +4,7 @@ import { generateKeyPairSync, sign, randomUUID, createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv-provider.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 const origin = 'https://s.example.test';
@@ -480,6 +481,89 @@ async function uploaded(data, changes={}) {
  assert.equal(response.status,201,await response.clone().text());return {...await response.json(),token,form};
 }
 
+test('upload discovery is read-only, credential-free and identical to the created session contract', async () => {
+  const before = await db.prepare('SELECT count(*) AS n FROM upload_sessions').first();
+  const statements = [];
+  onD1Before = event => { statements.push(event); };
+  let detail;
+  try {
+    detail = (await client.callTool({ name: 'describe', arguments: { operation: 'session.create' } })).structuredContent;
+  } finally { onD1Before = undefined; }
+  assert.deepEqual(statements, []);
+  assert.deepEqual(await db.prepare('SELECT count(*) AS n FROM upload_sessions').first(), before);
+  assert(detail.upload, 'describe(session.create) must expose the upload contract without creating a session');
+  assert.equal(detail.token, undefined);
+  assert.equal(detail.session_id, undefined);
+  assert.equal(detail.upload.protocol_version, 1);
+  assert.equal(detail.upload.url, origin + '/upload');
+  assert.equal(detail.upload.method, 'POST');
+  assert.equal(detail.upload.authorization, 'Bearer <token>');
+  assert.equal(detail.upload.max_metadata_bytes, 16384);
+  assert.deepEqual(detail.upload.generated_fields, ['operation_id', 'size_bytes', 'sha256']);
+  const session = await call('session.create');
+  assert.deepEqual(session.upload, detail.upload);
+  assert(!JSON.stringify(detail).includes(session.token));
+  const operationDetail = (await client.callTool({ name: 'describe', arguments: { operation: 'operation.get' } })).structuredContent;
+  assert.deepEqual(detail.upload.result_schema, operationDetail.resultSchema);
+  assert.deepEqual(detail.upload.result_semantics, operationDetail.result_semantics);
+  for (const field of ['filename', 'content_type', 'title', 'description', 'tags', 'retention_seconds']) {
+    assert(detail.upload.metadata_schema.properties[field].description, field);
+  }
+  assert.equal(detail.upload.metadata_schema.properties.retention_seconds.default, 2592000);
+  const urlDetail = (await client.callTool({ name: 'describe', arguments: { operation: 'resource.create_url' } })).structuredContent;
+  assert.deepEqual(urlDetail.inputSchema.properties.retention_seconds, detail.upload.metadata_schema.properties.retention_seconds);
+  for (const operation of ['resource.create_url', 'resource.get', 'resource.update', 'resource.delete']) {
+    const resourceDetail = (await client.callTool({ name: 'describe', arguments: { operation } })).structuredContent;
+    assert.deepEqual(resourceDetail.result_semantics, detail.upload.result_semantics);
+    if (operation === 'resource.get') assert.equal(resourceDetail.resultSchema, undefined);
+    if (operation === 'resource.update') assert(resourceDetail.inputSchema.properties.expires_at.description);
+  }
+
+  assert.match(detail.upload.recovery, /operation.get/);
+  assert.match(detail.upload.recovery, /NOT_FOUND/);
+  assert.match(detail.upload.recovery, /needs_reupload/);
+});
+
+test('discovered upload metadata examples and constraints match authoritative runtime validation', async () => {
+  const detail = (await client.callTool({ name: 'describe', arguments: { operation: 'session.create' } })).structuredContent;
+  assert(detail.upload, 'missing discovered upload contract');
+  const { token } = await call('session.create');
+  const example = detail.upload.metadata_schema.examples[0];
+  // The published example describes an empty file, including its actual checksum.
+  const valid = multipart(Buffer.alloc(0), { ...example, operation_id: randomUUID() });
+  assert.equal((await upload(token, valid)).status, 201);
+  const result = await call('operation.get', { operation_id: valid.metadata.operation_id });
+  const validateResult = new AjvJsonSchemaValidator().getValidator(detail.upload.result_schema);
+  const assertResult = value => { const checked = validateResult(value); assert.equal(checked.valid, true, checked.errorMessage); };
+  assertResult(result);
+  assertResult({ ...result, future_field: true });
+  assert.equal(validateResult({ resource: result.resource }).valid, false);
+  const missing = await errorCall('operation.get', { operation_id: randomUUID() }, 'NOT_FOUND');
+  assertResult({ error: missing });
+  const pendingForm = multipart(Buffer.from('bad checksum'), { sha256: '0'.repeat(64), retention_seconds: null });
+  const pending = await (await upload(token, pendingForm)).json();
+  assertResult(pending);
+  assert.equal(pending.resource.accessible, false);
+  assert.equal(pending.resource.expires_at, null);
+  assert.equal(pending.operation.steps.upload, 'needs_reupload');
+  await call('resource.delete', { resource_id: pending.resource.id });
+  assertResult(await call('operation.get', { operation_id: pendingForm.metadata.operation_id }));
+  assert.equal(result.resource.accessible, true);
+  assert.equal(result.resource.expires_at - result.resource.published_at, 2592000);
+  for (const changes of [
+    { unknown_field: true }, { filename: 'bad\nname' }, { content_type: 'text/plain; charset=utf-8' },
+    { sha256: 'A'.repeat(64) }, { title: null }, { tags: ['same', 'same'] }, { retention_seconds: 0 },
+  ]) {
+    const form = multipart(Buffer.alloc(0), changes);
+    assert.equal((await upload(token, form)).status, 400, JSON.stringify(changes));
+    assert.equal(await db.prepare('SELECT id FROM operations WHERE id=?').bind(form.metadata.operation_id).first(), null);
+  }
+  // These strings satisfy their character limits but their UTF-8 JSON exceeds the advertised byte limit.
+  const tooLarge = multipart(Buffer.alloc(0), { description: '汉'.repeat(6000) });
+  assert(Buffer.byteLength(JSON.stringify(tooLarge.metadata)) > detail.upload.max_metadata_bytes);
+  assert.equal((await upload(token, tooLarge)).status, 400);
+});
+
 test('session tokens are hash-only, valid for 24h, reusable, paginated and revocable',async()=>{
  const session=await call('session.create',{client:'file-test'});
  assert.equal(session.expires_at-session.created_at,86400);
@@ -780,8 +864,22 @@ test('expiration policies validate, remain idempotent, and edits use absolute de
  assert.equal((await call('resource.create_url',args)).resource.expires_at,deadline);
  await errorCall('resource.create_url',{...args,retention_seconds:121},'IDEMPOTENCY_CONFLICT');
  for(const expires_at of [0,now(),now()-1,1.5,'60',false,9007199254740992])await errorCall('resource.update',{resource_id:id,expires_at},'INVALID_ARGUMENTS');
- assert.equal((await call('resource.update',{resource_id:id,expires_at:null})).resource.expires_at,null);
+ const madePermanent=await call('resource.update',{resource_id:id,expires_at:null});
+ assert.equal(madePermanent.resource.expires_at,null);
+ assert.equal(madePermanent.resource.retention_seconds,120); // Original creation policy does not change with the current deadline.
  const permanent=await create({retention_seconds:null});assert.equal(permanent.resource.expires_at,null);assert.equal(typeof permanent.resource.published_at,'number');
+ const madeFinite=await call('resource.update',{resource_id:permanent.resource.id,expires_at:deadline});
+ assert.equal(madeFinite.resource.expires_at,deadline);
+ assert.equal(madeFinite.resource.retention_seconds,null);
+ const detail=(await client.callTool({name:'describe',arguments:{operation:'operation.get'}})).structuredContent;
+ const validateResult=new AjvJsonSchemaValidator().getValidator(detail.resultSchema);
+ for(const item of [madePermanent,madeFinite]) {
+  const current=await call('operation.get',{operation_id:item.operation.operation_id});
+  const checked=validateResult(current);assert.equal(checked.valid,true,checked.errorMessage);
+  assert.equal(current.resource.expires_at,item.resource.expires_at);
+  assert.equal(current.resource.retention_seconds,item.resource.retention_seconds);
+ }
+
  const defaultArgs={operation_id:randomUUID(),target_url:'https://example.com'};
  const standard=await call('resource.create_url',defaultArgs);
  assert.equal((await call('resource.create_url',{...defaultArgs,retention_seconds:2592000})).resource.id,standard.resource.id);

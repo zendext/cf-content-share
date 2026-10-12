@@ -10,7 +10,7 @@ pub async fn create(env: &Env, args: &Value) -> Result<Value> {
     env.d1("DB")?.prepare("INSERT INTO upload_sessions(id,token_hash,created_at,expires_at,client) VALUES(?,?,?,?,?)")
         .bind(&[id.clone().into(), hex::encode(Sha256::digest(token.as_bytes())).into(), (now as f64).into(), ((now+86400) as f64).into(), args["client"].as_str().map(Into::into).unwrap_or(wasm_bindgen::JsValue::NULL)])?.run().await?;
     Ok(
-        json!({"session_id":id,"token":token,"created_at":now,"expires_at":now+86400,"upload":{"url":format!("{}/upload",env.var("PUBLIC_ORIGIN")?),"method":"POST","authorization":"Bearer <token>","body":"multipart/form-data: metadata JSON first, then exactly one file part","metadata_schema":crate::catalog::upload_schema(),"recovery":"Save operation_id and parameters before upload. Query operation.get after an unknown result. Retransmit identical parameters only when steps.upload=needs_reupload."}}),
+        json!({"session_id":id,"token":token,"created_at":now,"expires_at":now+86400,"upload":crate::catalog::upload_contract(&env.var("PUBLIC_ORIGIN")?.to_string())}),
     )
 }
 pub async fn revoke(env: &Env, id: &str) -> Result<Value> {

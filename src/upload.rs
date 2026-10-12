@@ -73,7 +73,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
     };
     let constraints = multer::Constraints::new()
         .allowed_fields(vec!["metadata", "file"])
-        .size_limit(multer::SizeLimit::new().for_field("metadata", 16384));
+        .size_limit(multer::SizeLimit::new().for_field("metadata", catalog::MAX_METADATA_BYTES));
     let mut multipart = multer::Multipart::with_constraints(input, boundary, constraints);
     let metadata = match multipart.next_field().await {
         Ok(Some(field)) if field.name() == Some("metadata") => match field.bytes().await {
@@ -86,26 +86,6 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
     else {
         return error("INVALID_METADATA", 400);
     };
-    let mime = metadata["content_type"].as_str().unwrap();
-    if !mime
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b"!#$&^_.+-/".contains(&b))
-        || mime.split('/').count() != 2
-        || mime.starts_with('/')
-        || mime.ends_with('/')
-        || metadata["filename"]
-            .as_str()
-            .unwrap()
-            .chars()
-            .any(char::is_control)
-        || !metadata["sha256"]
-            .as_str()
-            .unwrap()
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return error("INVALID_METADATA", 400);
-    }
     for key in ["title", "description"] {
         if metadata.get(key).is_none() {
             metadata[key] = json!("");

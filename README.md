@@ -4,7 +4,7 @@
 
 新资源默认从首次发布起保留 30 天，创建时可自定义时长或设为永久；未到期前可以调整截止时间，分享地址不变。到期后服务端拒绝新请求并异步清理，浏览器已缓存的副本不会被收回。
 
-资源有效期和 KV 24 小时兜底已部署并激活，本轮完整本地回归及云端验收已完成，见[本次云端记录](docs/research/2026-10-12-expiration-cloud-acceptance.md)。已有安装升级必须按[部署与升级](docs/deployment.md#5-正式版本升级)固定一次旧资源计时起点，不能直接只发布 Worker。
+资源有效期和 KV 24 小时兜底已部署并激活，该版本的本地回归及云端验收见[有效期云端记录](docs/research/2026-10-12-expiration-cloud-acceptance.md)。尚未启用有效期的已有安装，须按[部署与升级](docs/deployment.md#5-正式版本升级)固定一次旧资源计时起点；已完成激活的服务在无新迁移时只更新代码，不重复初始化期限。
 
 ## 使用的 Cloudflare 基础设施
 
@@ -43,7 +43,7 @@ Token 不得出现在聊天、命令参数、日志或 Git 文件中。
 明确告诉我具体缺项，不要扩大权限或购买套餐。最后报告结果和未验证项。
 ```
 
-Agent 复用仓库初始化脚本，通过 Cloudflare API 补齐 DNS / Access，再用 Wrangler 发布。仓库当前没有包办这些步骤的一键安装程序；提示词由有终端和网络访问能力的 Agent 执行。需要 Node.js 22+、Rust/Wasm 工具链和已接入 Cloudflare 的域名；创建 Token、必要的服务开通和本人登录仍需用户完成。
+Agent 复用仓库初始化脚本，通过 Cloudflare API 补齐 DNS / Access，再用 Wrangler 发布。仓库当前没有包办这些步骤的一键安装程序；提示词由有终端和网络访问能力的 Agent 执行。需要 Node.js 24.12+、Rust/Wasm 工具链和已接入 Cloudflare 的域名；创建 Token、必要的服务开通和本人登录仍需用户完成。
 
 ### Token 权限
 
@@ -70,9 +70,9 @@ DNS 与两项 Access 权限用于让 Agent 配置域名、应用、团队和身�
 
 ## 安装 Agent Skill
 
-仓库提供 [cf-content-share Skill](skills/cf-content-share/SKILL.md) 和无 npm 依赖的[上传脚本](skills/cf-content-share/scripts/upload.mjs)。将整个 `skills/cf-content-share` 目录复制到 `~/.agents/skills/cf-content-share`，保留 `scripts/` 子目录；已有同名安装时先核对，不直接覆盖。Skill 需要 Node.js 22+ 和已登录的 MCP 连接。
+仓库提供 [cf-content-share Skill](skills/cf-content-share/SKILL.md) 和无运行时 npm 依赖的 [TypeScript 上传脚本](skills/cf-content-share/scripts/upload.mts)。将整个 `skills/cf-content-share` 目录复制到 `~/.agents/skills/cf-content-share`，保留 `scripts/` 子目录；已有同名安装时先核对，不直接覆盖。Skill 需要 Node.js 24.12+ 和已登录的 MCP 连接。旧版 Skill 和脚本需一并更新；支持的传输协议版本不变时，后续业务字段变化通过 MCP 发现，无需为此更新本地 Skill。
 
-典型请求：`用 $cf-content-share 把这个 PDF 分享出去，标题为“会议资料”，保留 7 天`。Skill 指导 Agent 通过 MCP 创建会话，再用 HTTP 上传正文；安装 Skill 不会自动上传文件。上传结果不明时按 Skill 查询原操作，不要直接重新上传。
+典型请求：`用 $cf-content-share 把这个 PDF 分享出去，标题为“会议资料”，保留 7 天`。Skill 指导 Agent 先通过 `describe(session.create).upload` 获取当前契约，构造元数据并保存操作，再复用或创建会话、通过 HTTP 上传正文。脚本只报告传输结果，Agent 始终通过 MCP 查询最终操作状态和分享链接；结果不明时保留原操作，不直接重新上传。安装 Skill 不会自动上传文件。
 
 ## 本地开发与文档
 

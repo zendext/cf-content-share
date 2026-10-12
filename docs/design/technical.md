@@ -146,7 +146,7 @@ Streamable HTTP 支持 `2025-11-25` 和 `2025-06-18`。`initialize.params.protoc
 | `stats.query` | 查询范围、时区、资源／类别筛选、统计视图和粒度；返回汇总、趋势、来源、地区或排行 |
 | `stats.samples` | 查询范围、资源／类别／来源／地区等筛选、`limit`、`cursor`；返回有限访问样本 |
 
-这些是 `invoke` 的操作名称，不是新增 MCP 工具。文件二进制通过 `/upload` 传输；上传协议随 `session.create` 的发现说明提供，不把文件内容放入 MCP JSON。
+这些是 `invoke` 的操作名称，不是新增 MCP 工具。文件二进制通过 `/upload` 传输；上传协议随 `describe(session.create).upload` 提供，发现不创建会话；`session.create` 返回同一契约与上传凭据，不把文件内容放入 MCP JSON。
 
 ### 5.3 列表、搜索与结果
 
@@ -158,7 +158,7 @@ Streamable HTTP 支持 `2025-11-25` 和 `2025-06-18`。`initialize.params.protoc
 - MCP 结果使用结构化内容，并为客户端兼容提供等价文本 JSON。协议错误、业务错误、部分完成分别表达；部分完成不能只返回 `success: true`。
 - 创建、上传、详情和列表返回 `retention_seconds`、`published_at`、`expires_at`、`accessible` 和 `unavailable_reason`（`pending`、`expired`、`deleted` 或 `null`）；默认列表只包括未到期的已发布资源，按 ID 仍可查失效资源。Cron 尚未处理的到期记录不能在列表中继续作为有效资源显示。
 - Agent 将“再保留 30 天”或“原期限上延长 30 天”转换为明确的 `expires_at` 后提交并保存请求；重复提交同一时间不得变成新的相对续期。普通元数据、目标 URL 修改与访问均不改变期限。
-- `describe`、上传 metadata Schema、上传脚本及 Skill 已同步新参数和结果；完整本地回归及本轮实际云端上传已通过；客户端与清理收尾的验证范围见本次云端记录，不扩大为全部客户端已验收。
+- 服务端发现同时提供上传 metadata Schema、权威结果 Schema、结果解释和恢复规则；本地 Skill 与通用上传器不维护业务字段和结果枚举。历史有效期验收见[云端记录](../research/2026-10-12-expiration-cloud-acceptance.md)，不据此声称后续客户端改动已通过云端验收。
 
 例如删除已受理但清理失败时，业务结果可以为：
 
@@ -187,13 +187,15 @@ Agent 在请求前生成并保存唯一操作标识。服务端校验绝对 HTTP
 
 ### 6.2 HTTP 上传契约
 
-Agent 负责读取本地文件、获取大小、计算 SHA-256、保存操作标识并发起 HTTP 请求。首版拟采用一次 `POST /upload`：
+Agent 通过 MCP 发现业务 Schema 并构造完整 metadata；通用 TypeScript 上传器读取本地文件、获取大小、计算 SHA-256、保存操作标识并发起一次 `POST /upload`：
 
-- 请求头使用应用 Token；响应为结构化 JSON。
+- 请求头使用应用 Token；服务端响应为结构化 JSON。上传器只输出传输摘要，不把 HTTP 成功等同于发布；Agent 始终查询 MCP `operation.get` 获得权威结果。
 - 请求体为流式 `multipart/form-data`，先传一个 `metadata` JSON 部分，再传一个 `file` 二进制部分。
 - 元数据包含 `operation_id`、`filename`、`content_type`、`size_bytes`、`sha256`，以及可选标题、描述、标签；新增可选 `retention_seconds`，规则与网址创建一致。SHA-256 使用规范化的十六进制表示。
 - 这里的 multipart 只是封装元数据与一个文件，不是 R2 分片上传，不提供分片续传或单独的确认发布接口。
 - 小段元数据可缓冲，文件正文必须持续流式读取；Rust 表单解析与 R2 接口的具体库选择在原型中验证，不能以全文件缓冲代替流式方案。
+
+发现契约使用独立的 `protocol_version=1` 标识传输兼容性，暴露生成字段、元数据字节上限、输入和结果 Schema、结果语义及恢复说明；业务字段变化不要求升级本地上传器。客户端安全边界及 v1 state 兼容见[文件与恢复](../files.md#通用本地上传器)。本次扩展不增加 MCP 工具、不改变原上传路由或数据模型。
 
 上传处理顺序：
 

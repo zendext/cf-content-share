@@ -17,7 +17,7 @@ Cloudflare API 参考：[组织](https://developers.cloudflare.com/api/resources
 
 ## 1. 配置和部署身份
 
-先克隆本仓库并进入根目录。需要 Node.js 22+、Rust stable（支持 edition 2024）及 rustup；Wrangler 版本由 lockfile 固定。新环境执行：
+先克隆本仓库并进入根目录。需要 Node.js 24.12+、Rust stable（支持 edition 2024）及 rustup；Wrangler 版本由 lockfile 固定。新环境执行：
 
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -147,6 +147,10 @@ Route 固定生成为 `{ "pattern": "<host>/*", "zone_name": "<zone>" }`，不�
 ## 5. 正式版本升级
 
 原型已退役，升级和回滚只针对正式 Worker、域名与存储；不重建资源、不切回原型。本节区分准备 Schema、发布兼容代码和开始旧资源倒计时。已有服务首次启用有效期必须完成全套步骤；后续升级保留已存在的 T0，不重复初始化期限。
+
+通用 TypeScript 上传器升级只增加发现契约并更新本地 Skill，不增加 D1 迁移、不改变业务表或旧 state。对已经完成有效期激活的服务，先完成本地检查和正式配置 dry-run，再发布正常 Worker 即可；不进入下面的首次激活维护窗口，不重复执行有效期激活。部署前后核对既有绑定、Route、Secret 名称、Cron、容量及原资源，MCP 端验证发现契约和真实上传。旧版 Skill 与脚本需一起更新到本仓库版本，运行要求为 Node.js 24.12+。
+
+以下 5.1～5.4 描述首次启用资源有效期的升级及恢复边界。
 
 ### 5.1 发布准备与维护门禁
 

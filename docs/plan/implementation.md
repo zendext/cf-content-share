@@ -96,3 +96,12 @@ Documentation impact：README 增加安装、依赖、入口和退出码说明�
 发布顺序固定为全维护→备份→0003→加载新bundle的兼容维护→显式activation→同一bundle恢复服务，见[部署步骤](../deployment.md#5-正式版本升级)。已完成维护、备份、0003迁移、兼容发布、一次激活和恢复服务：T0为2026-10-12 02:29:02 UTC，迁移1条旧未删除资源、统一截止2026-11-11 02:29:02 UTC，重复apply不变，11条旧deleted不恢复。真实MCP、旧图片、三种新期限、1 MiB上传与流式重发、SVG到点各入口拒绝、URL自然Cron删除已通过。最终 `6a3c626` 已发布100%并回读describe86400、原图KV绝对新鲜度86400；四个手动删除测试资源均404且清理完成，本轮会话撤销后上传401，匿名／错误Bearer的MCP拒绝通过。SVG也由真实Cron自然删除并释放容量；最终1条published、17条deleted，39个operation全部completed，published=12134字节、reserved=cleanup=0，R2与备份前一致仅原1个对象，原有效上传会话仍保留。实际T0不变，完整证据与首次迁移失败修正见[本次云端记录](../research/2026-10-12-expiration-cloud-acceptance.md)。恢复发布失败保持维护，激活后不回滚不认识有效期的旧Worker。
 
 Documentation impact：同步README、需求与设计状态、文件与统计契约、部署激活顺序和实现记录；不改变已确认的30天、永久、旧pending、24小时兜底及浏览器缓存要求。
+
+
+## 通用 TypeScript 上传器（Issue #3，2026-10-12）
+
+本轮将本地上传器迁移为 Node.js 24.12+ 原生执行的 TypeScript，保留 prepare／send、私有状态和流式传输边界。业务参数由 Agent 按 `describe(session.create).upload` 的实时 Schema 构造，服务发现扩展为输入／结果 Schema、结果解释和恢复规则；发现本身不创建上传会话。脚本只保护生成字段、检查传输安全与字节上限，不内置业务字段、有效期默认值或发布状态。
+
+send 的输出只描述传输，Agent 在实际 HTTP 尝试后查询原 `operation_id`，按 MCP 权威结果给出分享地址或恢复动作。已有 v1 state 保持可发送，不改写保存的 metadata；新 prepare 使用 v2 state 保存传输契约。此次不增加迁移，不重新初始化有效期，也不更改既有资源绑定。前面 Agent 入口和有效期章节中的旧脚本结果枚举属于对应历史版本，其当前接口以[文件与恢复](../files.md#通用本地上传器)为准。
+
+Documentation impact：更新 Skill、README、文件契约、技术设计及部署路径；旧版 Skill 与脚本需一次性同步，兼容协议内后续业务字段变化由服务发现承载。最终代码冻结后，父级执行 `npm run check`，严格 TypeScript 无输出类型检查、Rust fmt、Wasm Clippy 和 Rust/Wasm 构建全部通过，107 项测试全部通过；正式配置 production dry-run 退出 0。本轮云端部署及真实 MCP／上传验收尚待执行，上述本地结果不替代云端验证。

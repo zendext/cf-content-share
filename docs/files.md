@@ -4,7 +4,7 @@
 
 ## 上传协议
 
-1. 经已认证的 MCP 调用 `session.create`，可传 `client` 标识。返回 `session_id`、仅本次返回的 `token`、创建时间、固定 24 小时到期时间，以及上传地址、完整元数据 Schema。
+1. 经已认证的 MCP 调用 `describe`，指定 `operation=session.create`，即可取得无凭据的 `upload` 契约，无需先创建会话。它包括 `protocol_version=1`、上传 URL／方法、`generated_fields`、`max_metadata_bytes`、`metadata_schema`、`result_schema`、`result_semantics` 和 `recovery`。需要上传授权时再调用 `session.create`（可传 `client` 标识），返回 `session_id`、仅本次返回的 `token`、创建时间、固定 24 小时到期时间，以及同源的完整 `upload` 契约。
 2. 客户端先记录操作标识、文件大小和 SHA-256，再 `POST /upload`。请求头为 `Authorization: Bearer <token>`；同一会话可上传多份文件。会话列表分页且不返回明文或摘要；撤销和到期阻止新的上传，已受理的上传仍可收尾。
 3. 请求体为 `multipart/form-data`：先一个名为 `metadata` 的 JSON 部分，再一个名为 `file` 的二进制部分，不能添加其他部分。元数据缓冲上限 16 KiB；multipart 边界最多 70 字符，前后封装分别有 256 KiB 读取预算。
 4. 必填字段：`operation_id`、`filename`、`content_type`、`size_bytes`、`sha256`。可选字段：`title`、`description`、`tags`、`retention_seconds`。摘要为 64 位小写十六进制；大小为 0～9007199254740991 的整数。内容类型使用不带参数的 MIME 值，文件名不能含控制字符。具体长度和标签限制以返回 Schema 为准。
@@ -12,7 +12,19 @@
 
 D1 只保存 Token 的 SHA-256。应用 Token 仅能上传；OAuth 撤销不会自动撤销已签发的应用 Token。客户端应按服务 origin 保存会话和操作标识，状态文件仅当前用户可读，不把 Token 写入日志。
 
-网络结果不明时调用 `operation.get`。已发布或已删除时重试相同创建参数仍返回原资源；不同参数复用标识被拒绝。`steps.upload=needs_reupload` 时，可沿用原操作标识和全部参数重新发送完整文件。同文件名或同摘要的新操作生成独立 12 位 ID，不覆盖、不去重。删除后的 ID 和原操作映射永久保留。
+每次 HTTP 尝试之后都调用 `operation.get` 确认当前权威结果，包括完整 2xx、非 2xx 和结果不明的情况；HTTP 状态不代表当前可访问性。已发布或已删除时重试相同创建参数仍返回原资源；不同参数复用标识被拒绝。`steps.upload=needs_reupload` 时，可沿用原操作标识和全部参数重新发送完整文件。同文件名或同摘要的新操作生成独立 12 位 ID，不覆盖、不去重。删除后的 ID 和原操作映射永久保留。
+
+## 通用本地上传器
+
+[Skill](../skills/cf-content-share/SKILL.md) 负责引导 Agent 发现业务契约、按用户意图构造参数及解释权威结果；[upload.mts](../skills/cf-content-share/scripts/upload.mts) 只负责本地文件与 HTTP 传输。运行要求为 Node.js 24.12+，无需运行时 npm 依赖；仓库开发使用 TypeScript 与 `@types/node` 执行严格无输出类型检查。
+
+`prepare --file --origin --metadata-file --contract-file --state-file` 读取私有 JSON：metadata 是 Agent 按当次 Schema 构造的业务参数，contract 是发现响应中的无凭据 `upload` 对象。脚本保护并生成 `operation_id`、`size_bytes`、`sha256`，检查 JSON／数值安全性、传输协议和元数据字节上限，一次性保存 v2 state，拒绝覆盖。它不内置业务字段列表、不补默认值、不解释业务 Schema；最终业务校验仍由服务端执行。省略、显式 `null`、数组和嵌套对象按原值保存。
+
+`send --state-file --session-file` 重新核对文件大小和摘要、私有文件权限、会话有效期、协议和同 origin 地址，流式发送一次请求。它兼容已有 v1 state，不改写旧元数据；新 prepare 使用 v2 state 固定传输契约。重定向不跟随，网络失败不自动重传，响应正文和凭据不输出。
+
+传输摘要为 `{operation_id, transport_status, http_status?, error_code?}`。完整收到 2xx 时退出 0，完整非 2xx 或本地输入错误退出 1，请求失败或响应不完整退出 2；这三个退出码均不表示资源已发布。本地输入错误可能在发送之前发生，只输出脱敏错误。Agent 在实际 HTTP 尝试后始终查询 `operation.get`，按服务发现的 `result_schema`、`result_semantics` 和 `recovery` 解释可访问性、规范分享 URL 和恢复动作。
+
+已保存 state 的元数据不得编辑；恢复必须沿用原 ID、参数及文件字节。源文件或用户要求改变时先处理旧操作，再决定是否有意创建新分享。更新旧版 Skill 和上传脚本后，兼容传输协议范围内的业务字段变化由发现契约承载，不要求本地代码同步。
 
 ## 资源有效期
 

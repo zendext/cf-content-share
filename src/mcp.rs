@@ -114,10 +114,30 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                         .into_iter()
                         .find(|op| op.name == name)
                     {
-                        Some(op) => tool_result(
-                            json!({"name":op.name,"description":op.description,"inputSchema":op.schema,"result":op.result,"side_effects":op.side_effects,"example":op.example}),
-                            false,
-                        ),
+                        Some(op) => {
+                            let mut detail = json!({"name":op.name,"description":op.description,"inputSchema":op.schema,"result":op.result,"side_effects":op.side_effects,"example":op.example});
+                            match op.operation {
+                                catalog::Action::CreateSession => {
+                                    detail["upload"] = catalog::upload_contract(
+                                        &env.var("PUBLIC_ORIGIN")?.to_string(),
+                                    )
+                                }
+                                catalog::Action::GetOperation => {
+                                    detail["resultSchema"] = catalog::operation_result_schema();
+                                    detail["result_semantics"] =
+                                        catalog::resource_result_semantics();
+                                }
+                                catalog::Action::CreateUrl
+                                | catalog::Action::GetResource
+                                | catalog::Action::UpdateResource
+                                | catalog::Action::DeleteResource => {
+                                    detail["result_semantics"] =
+                                        catalog::resource_result_semantics();
+                                }
+                                _ => {}
+                            }
+                            tool_result(detail, false)
+                        }
                         None => tool_error("UNKNOWN_OPERATION"),
                     },
                 }

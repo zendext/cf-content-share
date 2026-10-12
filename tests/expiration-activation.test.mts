@@ -105,6 +105,6 @@ test('expiration activation errors redact network and API bodies and reject inva
       environment: 'missing',
       fetch: () => assert.fail('must not request'),
     }),
-    /环境/,
+    /environment/,
   );
 });

@@ -50,7 +50,9 @@ export async function activateExpiration({
         }
       : rawConfig;
   } catch {
-    throw new Error('无法读取 Wrangler 配置或所选环境。');
+    throw new Error(
+      'Cannot read the Wrangler configuration or selected environment.',
+    );
   }
   const databases = config.d1_databases?.filter(
     (database: {
@@ -67,7 +69,7 @@ export async function activateExpiration({
     )
   ) {
     throw new Error(
-      'Wrangler 配置必须包含有效 account_id 和唯一 DB 数据库绑定。',
+      'Wrangler configuration must contain a valid account_id and exactly one DB database binding.',
     );
   }
   const database = databases[0];
@@ -88,13 +90,15 @@ export async function activateExpiration({
         },
       );
     } catch {
-      throw new Error('D1 请求失败；结果可能未确认，请重新预览。');
+      throw new Error(
+        'The D1 request failed. Its result may be unconfirmed; run the preview again.',
+      );
     }
     let body: D1Response;
     try {
       body = await response.json();
     } catch {
-      throw new Error(`D1 返回格式无效（HTTP ${response.status}）。`);
+      throw new Error(`Invalid D1 response format (HTTP ${response.status}).`);
     }
     if (
       !response.ok ||
@@ -103,18 +107,20 @@ export async function activateExpiration({
       body.result.some((item) => item.success !== true)
     ) {
       throw new Error(
-        `D1 操作失败（HTTP ${response.status}）；检查权限和 0003 迁移状态，重新预览后再重试。`,
+        `The D1 operation failed (HTTP ${response.status}). Check permissions and migration 0003, then run the preview again before retrying.`,
       );
     }
     return body.result;
   }
   const before = (await query(previewSql))[0]?.results?.[0];
   if (!before || !Number.isInteger(before.legacy_resources))
-    throw new Error('D1 预览结果无效。');
+    throw new Error('The D1 preview result is invalid.');
   if (apply) await query(activationSql);
   const current = apply ? (await query(previewSql))[0]?.results?.[0] : before;
   if (!current || (apply && !Number.isSafeInteger(current.activated_at)))
-    throw new Error('D1 激活结果尚未确认；请重新预览。');
+    throw new Error(
+      'The D1 activation result is unconfirmed. Run the preview again.',
+    );
   return {
     mode: apply ? 'apply' : 'preview',
     database: database.database_name,
@@ -150,7 +156,7 @@ if (
       );
     else {
       if (!values.config)
-        throw new Error('必须指定 --config；使用 --help 查看用法。');
+        throw new Error('--config is required. Use --help for usage.');
       const token = await readToken(values['token-file']);
       console.log(
         JSON.stringify(
@@ -171,10 +177,10 @@ if (
         'code' in error &&
         typeof error.code === 'string' &&
         error.code.startsWith('ERR_PARSE_ARGS')
-        ? '参数无效；使用 --help 查看用法。不要通过命令行传递 Token。'
+        ? 'Invalid arguments. Use --help for usage. Do not pass tokens on the command line.'
         : error instanceof Error
           ? error.message
-          : '激活失败。',
+          : 'Activation failed.',
     );
     process.exitCode = 1;
   }

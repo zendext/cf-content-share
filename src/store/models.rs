@@ -203,7 +203,7 @@ impl Operation {
                 "code": code,
                 "step": step,
                 "retryable": retryable,
-                "message": "任务保留了当前步骤与最近错误；上传正文缺失时由客户端沿用原参数重传，其他未完成步骤可通过 operation.retry 重新安排。"
+                "message": "The operation retains its current steps and latest error. If the upload body is missing, resend it with the original arguments. Use operation.retry to reschedule other incomplete steps."
             })
         });
         json!({

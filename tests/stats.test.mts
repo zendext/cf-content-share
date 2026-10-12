@@ -64,6 +64,11 @@ const errorCall = async (
     JSON.stringify(result),
   );
   assert.equal(JSON.stringify(result).includes('secret-must-not-leak'), false);
+  assert.match(
+    (result.structuredContent as { error: ApiError }).error.message,
+    /^[\x20-\x7e]+$/,
+    'Diagnostic messages must use English ASCII text',
+  );
   return (result.structuredContent as { error: ApiError }).error;
 };
 const request = (

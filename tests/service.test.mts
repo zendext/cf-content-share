@@ -87,6 +87,11 @@ const errorCall = async (
     JSON.stringify(result),
   );
   assert.equal(JSON.stringify(result).includes('secret-must-not-leak'), false);
+  assert.match(
+    (result.structuredContent as { error: ApiError }).error.message,
+    /^[\x20-\x7e]+$/,
+    'Diagnostic messages must use English ASCII text',
+  );
   return (result.structuredContent as { error: ApiError }).error;
 };
 const cron = async () =>
@@ -787,6 +792,7 @@ test('KV failure preserves published state; public reads fall back to primary an
     assert.equal(result.operation.status, 'retry_pending');
     assert.equal(result.operation.steps.kv, 'failed');
     assert.equal(result.operation.last_error!.code, 'KV_SYNC_FAILED');
+    assert.match(result.operation.last_error!.message, /^[\x20-\x7e]+$/);
     assert.equal(result.operation.retry_count, 0);
     assert.equal(result.operation.total_attempts, 1);
     assert(result.operation.next_retry_at! >= now() + 295);

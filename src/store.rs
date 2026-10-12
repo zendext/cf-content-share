@@ -22,23 +22,41 @@ pub fn now() -> i64 {
 }
 pub fn failure(code: &str, step: &str, retryable: bool) -> Value {
     let message = match code {
-        "UNAUTHORIZED" => "上传会话缺失、已撤销或已到期。",
-        "INVALID_METADATA" => "上传元数据不符合 session.create 返回的 Schema 或上传约束。",
-        "INVALID_MULTIPART" => "请求必须使用合法的 multipart/form-data。",
-        "FILE_TOO_LARGE" => "声明文件大小超过 MAX_FILE_BYTES。",
-        "CAPACITY_EXCEEDED" => "已发布、预留及待清理空间之和无法容纳该文件。",
-        "IMMUTABLE_FILE" => "托管文件的字节属性和目标不可编辑；请创建新资源。",
-        "INVALID_ARGUMENTS" => "参数不符合 describe 返回的 Schema 或操作约束。",
-        "UNKNOWN_OPERATION" => "操作未实现；请先调用 describe 查询当前目录。",
-        "NOT_FOUND" => "未找到指定资源或操作。",
-        "IDEMPOTENCY_CONFLICT" => "该操作标识已用于不同的创建参数。",
-        "RESOURCE_EXPIRED" => "资源已到期，不能编辑或恢复。",
-        "RESOURCE_DELETED" => "资源已永久删除，不能编辑或恢复。",
-        "INVALID_CURSOR" => "游标无效或与当前列表及筛选条件不符。",
-        "INVALID_TIME_RANGE" => "起始时刻必须早于结束时刻。",
-        "STORAGE_UNAVAILABLE" => "D1 操作未能确认；请通过 operation.get 核对已保存状态后重试。",
-        "ID_ALLOCATION_RETRY" => "资源 ID 分配冲突，请沿用原操作标识重试。",
-        _ => "操作未完成。",
+        "UNAUTHORIZED" => "The upload session is missing, revoked, or expired.",
+        "INVALID_METADATA" => {
+            "Upload metadata does not match the schema or constraints returned by session.create."
+        }
+        "INVALID_MULTIPART" => "The request must contain valid multipart/form-data.",
+        "FILE_TOO_LARGE" => "The declared file size exceeds MAX_FILE_BYTES.",
+        "CAPACITY_EXCEEDED" => {
+            "Published, reserved, and pending-cleanup storage leaves insufficient capacity for this file."
+        }
+        "IMMUTABLE_FILE" => {
+            "Hosted file byte properties and targets are immutable. Create a new resource instead."
+        }
+        "INVALID_ARGUMENTS" => {
+            "Arguments do not match the schema or constraints returned by describe."
+        }
+        "UNKNOWN_OPERATION" => {
+            "The operation is not supported. Call describe to query the current catalog."
+        }
+        "NOT_FOUND" => "The requested resource or operation was not found.",
+        "IDEMPOTENCY_CONFLICT" => {
+            "This operation ID has already been used with different creation arguments."
+        }
+        "RESOURCE_EXPIRED" => "The resource has expired and cannot be edited or restored.",
+        "RESOURCE_DELETED" => {
+            "The resource has been permanently deleted and cannot be edited or restored."
+        }
+        "INVALID_CURSOR" => "The cursor is invalid or does not match the current list and filters.",
+        "INVALID_TIME_RANGE" => "The start time must precede the end time.",
+        "STORAGE_UNAVAILABLE" => {
+            "The D1 operation could not be confirmed. Check the persisted state with operation.get before retrying."
+        }
+        "ID_ALLOCATION_RETRY" => {
+            "Resource ID allocation conflicted. Retry with the original operation ID."
+        }
+        _ => "The operation did not complete.",
     };
     json!({"error":{"code":code,"step":step,"retryable":retryable,"message":message}})
 }

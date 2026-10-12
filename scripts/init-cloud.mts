@@ -100,14 +100,16 @@ function validateConfig(config: DeploymentConfig) {
     Object.keys(config).some((key) => !fields.includes(key))
   )
     throw new Error(
-      '部署配置包含未知字段；凭据只能通过环境变量或 --token-file 提供。',
+      'Deployment configuration contains unknown fields. Supply credentials only through an environment variable or --token-file.',
     );
   if (!hexId.test(config.account_id ?? ''))
-    throw new Error('account_id 必须为 32 位小写十六进制账户 ID。');
+    throw new Error(
+      'account_id must be a 32-character lowercase hexadecimal account ID.',
+    );
   for (const key of ['worker_name', 'resource_prefix'] as const) {
     if (typeof config[key] !== 'string' || !namePattern.test(config[key]))
       throw new Error(
-        `${key} 必须为 3–63 位小写字母、数字或连字符，首尾不能为连字符。`,
+        `${key} must contain 3-63 lowercase letters, digits, or hyphens and cannot start or end with a hyphen.`,
       );
   }
   const names = {
@@ -119,14 +121,16 @@ function validateConfig(config: DeploymentConfig) {
   };
   for (const kind of ['d1', 'kv', 'r2'] as const) {
     if (typeof names[kind] !== 'string' || !namePattern.test(names[kind]))
-      throw new Error(`${kind} 资源名称必须为 3–63 位小写字母、数字或连字符。`);
+      throw new Error(
+        `The ${kind} resource name must contain 3-63 lowercase letters, digits, or hyphens.`,
+      );
   }
   if (
     typeof names.analytics !== 'string' ||
     !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(names.analytics)
   )
     throw new Error(
-      'analytics_dataset 必须是字母开头的 1–64 位字母、数字或下划线。',
+      'analytics_dataset must contain 1-64 letters, digits, or underscores and start with a letter.',
     );
   let origin: URL;
   let issuer: URL;
@@ -134,7 +138,7 @@ function validateConfig(config: DeploymentConfig) {
     origin = new URL(config.public_origin);
     issuer = new URL(config.access_issuer);
   } catch {
-    throw new Error('public_origin 和 access_issuer 必须为 HTTPS origin。');
+    throw new Error('public_origin and access_issuer must be HTTPS origins.');
   }
   if (
     origin.protocol !== 'https:' ||
@@ -146,7 +150,7 @@ function validateConfig(config: DeploymentConfig) {
     issuer.port
   )
     throw new Error(
-      'public_origin 必须为无端口 HTTPS origin；access_issuer 必须为团队的 cloudflareaccess.com HTTPS origin。',
+      'public_origin must be an HTTPS origin without a port. access_issuer must be the team HTTPS origin under cloudflareaccess.com.',
     );
   if (
     typeof config.zone_name !== 'string' ||
@@ -156,13 +160,13 @@ function validateConfig(config: DeploymentConfig) {
     (origin.hostname !== config.zone_name &&
       !origin.hostname.endsWith(`.${config.zone_name}`))
   )
-    throw new Error('zone_name 必须是 public_origin 所属的 DNS 区域。');
+    throw new Error('zone_name must be the DNS zone containing public_origin.');
   if (
     typeof config.access_aud !== 'string' ||
     !/^[a-f0-9]{64}$/.test(config.access_aud)
   )
     throw new Error(
-      'access_aud 必须为 64 位小写十六进制 Access application audience。',
+      'access_aud must be a 64-character lowercase hexadecimal Access application audience.',
     );
   const timezone = config.default_timezone ?? 'Asia/Shanghai';
   try {
@@ -170,7 +174,7 @@ function validateConfig(config: DeploymentConfig) {
       throw new Error();
     new Intl.DateTimeFormat('en', { timeZone: timezone });
   } catch {
-    throw new Error('default_timezone 必须为有效时区。');
+    throw new Error('default_timezone must be a valid timezone.');
   }
   for (const key of ['max_file_bytes', 'total_storage_bytes'] as const) {
     if (
@@ -180,7 +184,7 @@ function validateConfig(config: DeploymentConfig) {
         BigInt(config[key]) > 9007199254740991n)
     )
       throw new Error(
-        `${key} 必须为非负整数字符串，且不超过 9007199254740991；不设置表示无产品容量上限。`,
+        `${key} must be a non-negative integer string no greater than 9007199254740991. Omit it to disable the application capacity limit.`,
       );
   }
   return { ...config, names, timezone };
@@ -189,7 +193,7 @@ function validateConfig(config: DeploymentConfig) {
 export async function readToken(tokenFile?: string, env = process.env) {
   if (!tokenFile) {
     if (!env.CLOUDFLARE_API_TOKEN?.trim())
-      throw new Error('请设置 CLOUDFLARE_API_TOKEN 或使用 --token-file。');
+      throw new Error('Set CLOUDFLARE_API_TOKEN or use --token-file.');
     return env.CLOUDFLARE_API_TOKEN.trim();
   }
   let file: FileHandle | undefined;
@@ -202,7 +206,7 @@ export async function readToken(tokenFile?: string, env = process.env) {
     return token;
   } catch {
     throw new Error(
-      '无法读取 Token 文件：须为当前用户可读的普通文件、权限 0600，内容仅为 Token。',
+      'Cannot read the token file. It must be a regular file readable by the current user, have mode 0600, and contain only the token.',
     );
   } finally {
     await file?.close();
@@ -213,12 +217,16 @@ async function readOutput(filename: string) {
   try {
     const info = await lstat(filename);
     if (!info.isFile())
-      throw new Error('输出必须为普通文件，不能是链接或目录。');
+      throw new Error(
+        'The output must be a regular file, not a symlink or directory.',
+      );
     return await readFile(filename, 'utf8');
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
       return null;
-    throw new Error('无法安全读取输出配置；检查文件类型和权限。');
+    throw new Error(
+      'Cannot safely read the output configuration. Check its file type and permissions.',
+    );
   }
 }
 
@@ -233,7 +241,9 @@ function assertExisting(
   try {
     old = JSON.parse(previous);
   } catch {
-    throw new Error('已有输出不是有效 JSON，拒绝覆盖。');
+    throw new Error(
+      'The existing output is not valid JSON. Refusing to overwrite it.',
+    );
   }
   const allowed = [
     'name',
@@ -290,7 +300,7 @@ function assertExisting(
     old?.build?.command !== 'npm run build'
   )
     throw new Error(
-      '已有输出含未知嵌套配置或自定义构建；拒绝覆盖。请将用户配置移出生成文件后人工合并。',
+      'The existing output contains unknown nested configuration or a custom build. Refusing to overwrite it. Move custom configuration out of the generated file and merge it manually.',
     );
   if (
     !databaseId.test(d1.database_id ?? '') ||
@@ -313,7 +323,7 @@ function assertExisting(
     ae.dataset !== config.names.analytics
   )
     throw new Error(
-      '已有输出的账户、Worker 或资源标识不匹配（或含未知配置）；拒绝覆盖或重建。核对配置及云端资源后再处理。',
+      'The existing output has mismatched account, Worker, or resource IDs, or unknown configuration. Refusing to overwrite or recreate it. Verify the configuration and cloud resources first.',
     );
 }
 
@@ -330,14 +340,20 @@ export async function initialize({
   try {
     raw = JSON.parse(await readFile(configFile, 'utf8'));
   } catch {
-    throw new Error('无法读取部署配置 JSON；检查文件和语法。');
+    throw new Error(
+      'Cannot read the deployment configuration JSON. Check the file and its syntax.',
+    );
   }
   const config = validateConfig(raw);
   if (typeof token !== 'string' || !token || /\s/.test(token))
-    throw new Error('Cloudflare API Token 不能为空或包含空白。');
+    throw new Error(
+      'The Cloudflare API token must not be empty or contain whitespace.',
+    );
   const output = path.resolve(outputFile);
   if (output === path.resolve(configFile))
-    throw new Error('输出文件不能覆盖输入部署配置。');
+    throw new Error(
+      'The output file must not overwrite the input deployment configuration.',
+    );
   let lock: FileHandle | undefined;
   let temporary: string | undefined;
   try {
@@ -346,7 +362,7 @@ export async function initialize({
         lock = await open(`${output}.lock`, 'wx', 0o600);
       } catch {
         throw new Error(
-          '无法锁定输出文件；检查父目录、权限或并行初始化进程。中断遗留的 .lock 仅在确认没有运行进程后手动移除。',
+          'Cannot lock the output file. Check its parent directory, permissions, and concurrent initialization processes. Remove a stale .lock file manually only after confirming that no process is running.',
         );
       }
     }
@@ -375,7 +391,7 @@ export async function initialize({
         payload = await response.json();
       } catch {
         throw new Error(
-          `${method} ${route.split('?')[0]}：网络或响应解析失败。${method === 'POST' ? '创建结果未知，不自动重试；重新运行只读计划核对云端状态。' : '请检查网络后重试。'}`,
+          `${method} ${route.split('?')[0]}: Network request or response parsing failed. ${method === 'POST' ? 'The creation result is unknown. No automatic retry was attempted. Run the read-only plan again to verify cloud state.' : 'Check the network before retrying.'}`,
         );
       }
       if (!response.ok || payload?.success !== true) {
@@ -386,7 +402,7 @@ export async function initialize({
               .join(',')
           : '';
         throw new Error(
-          `${method} ${route.split('?')[0]}：Cloudflare HTTP ${response.status}${codes ? `，错误码 ${codes}` : ''}。检查账户、API 权限、配额及 Cloudflare 状态；${method === 'POST' ? '创建可能已发生，重新运行只读计划核对，禁止盲目重复创建。' : '未修改资源。'}`,
+          `${method} ${route.split('?')[0]}: Cloudflare HTTP ${response.status}${codes ? `, error codes ${codes}` : ''}. Check the account, API permissions, quotas, and Cloudflare status. ${method === 'POST' ? 'Creation may have succeeded. Run the read-only plan again to verify state before attempting another creation.' : 'No resources were modified.'}`,
         );
       }
       return payload;
@@ -405,7 +421,7 @@ export async function initialize({
       for (let page = 1; ; page++) {
         if (page > 10000)
           throw new Error(
-            '资源分页超出安全边界；未创建资源，请检查 API 分页响应。',
+            'Resource pagination exceeded the safety limit. No resources were created. Check the API pagination response.',
           );
         const query: URLSearchParams = new URLSearchParams({
           per_page: '100',
@@ -421,7 +437,9 @@ export async function initialize({
             ? (payload.result as { buckets?: CloudResource[] })?.buckets
             : payload.result;
         if (!Array.isArray(items))
-          throw new Error('资源列表响应格式错误；拒绝推断资源不存在。');
+          throw new Error(
+            'Invalid resource list response format. Cannot determine whether resources exist.',
+          );
         matches.push(
           ...items.filter(
             (item) =>
@@ -432,7 +450,9 @@ export async function initialize({
           cursor = payload.result_info?.cursor;
           if (!cursor) break;
           if (typeof cursor !== 'string' || cursors.has(cursor))
-            throw new Error('R2 分页游标重复或无效；未创建资源。');
+            throw new Error(
+              'The R2 pagination cursor is repeated or invalid. No resources were created.',
+            );
           cursors.add(cursor);
         } else {
           const info = payload.result_info;
@@ -451,7 +471,7 @@ export async function initialize({
       }
       if (matches.length > 1)
         throw new Error(
-          `${kind} 存在多个同名资源；请先人工核对，不会自动选择或删除。`,
+          `Multiple ${kind} resources share the same name. Verify them manually; none will be selected or deleted automatically.`,
         );
       const id =
         matches[0]?.[kind === 'd1' ? 'uuid' : kind === 'kv' ? 'id' : 'name'];
@@ -461,7 +481,9 @@ export async function initialize({
           kind === 'd1' ? databaseId : kind === 'kv' ? hexId : namePattern
         ).test(id ?? '')
       )
-        throw new Error(`${kind} 的 API 资源标识无效；停止初始化。`);
+        throw new Error(
+          `The ${kind} API resource ID is invalid. Initialization stopped.`,
+        );
       resources.push({
         kind,
         name: config.names[kind],
@@ -478,7 +500,7 @@ export async function initialize({
         bucket.result?.storage_class !== 'Standard'
       )
         throw new Error(
-          '目标 R2 桶未确认使用 Standard 存储类型；拒绝复用 InfrequentAccess 或未知类型，不会修改已有桶设置。',
+          'The target R2 bucket is not confirmed to use Standard storage. Refusing to reuse InfrequentAccess or unknown storage classes. Existing bucket settings will not be changed.',
         );
       const route = `r2/buckets/${config.names.r2}/domains`;
       const managed = await api<{ enabled: boolean }>(`${route}/managed`);
@@ -491,7 +513,7 @@ export async function initialize({
         custom.result.domains.some((domain) => domain.enabled !== false)
       )
         throw new Error(
-          '目标 R2 桶未确认私有：r2.dev 或自定义域名已启用/状态未知。请核对目标桶；初始化不会修改公开设置。',
+          'The target R2 bucket is not confirmed private: r2.dev or custom domains are enabled or their status is unknown. Verify the bucket; initialization will not change public access settings.',
         );
     };
     if (resources[2].id) await checkBucket();
@@ -536,7 +558,7 @@ export async function initialize({
           resource.name
       )
         throw new Error(
-          `${resource.kind} 创建响应缺少有效标识；结果未知，重新运行只读计划核对。`,
+          `The ${resource.kind} creation response lacks a valid ID. The result is unknown; run the read-only plan again to verify state.`,
         );
     }
     if (resources[2].action === 'create') await checkBucket();
@@ -589,7 +611,7 @@ export async function initialize({
     };
     if ((await readOutput(output)) !== previous)
       throw new Error(
-        '输出配置在初始化期间被修改，拒绝覆盖。云端资源保留；核对后重新运行。',
+        'The output configuration changed during initialization. Refusing to overwrite it. Cloud resources were retained; verify state before rerunning.',
       );
     temporary = `${output}.${randomUUID()}.tmp`;
     const file = await open(temporary, 'wx', 0o600);
@@ -640,7 +662,7 @@ if (
       );
     } else {
       if (!values.config)
-        throw new Error('必须指定 --config；使用 --help 查看用法。');
+        throw new Error('--config is required. Use --help for usage.');
       const token = await readToken(values['token-file']);
       const result = await initialize({
         configFile: values.config,
@@ -658,10 +680,10 @@ if (
         'code' in error &&
         typeof error.code === 'string' &&
         error.code.startsWith('ERR_PARSE_ARGS')
-        ? '参数无效；使用 --help 查看用法。不要通过命令行参数传递 Token。'
+        ? 'Invalid arguments. Use --help for usage. Do not pass tokens as command-line arguments.'
         : error instanceof Error
           ? error.message
-          : '初始化失败。',
+          : 'Initialization failed.',
     );
     process.exitCode = 1;
   }

@@ -281,7 +281,10 @@ test('duplicate exact names fail before any create', async (t) => {
     { name: 'share-test', uuid: dbId },
     { name: 'share-test', uuid: dbId },
   );
-  await assert.rejects(f.run({ apply: true }), /多个同名资源/);
+  await assert.rejects(
+    f.run({ apply: true }),
+    /Multiple .* resources share the same name/,
+  );
   assert.ok(f.api.requests.every((item) => item.method === 'GET'));
   assert.deepEqual(await readdir(f.root), ['deployment.local.json']);
 });
@@ -291,7 +294,7 @@ test('unknown create outcome stops, redacts errors and reuses partial creation o
   f.api.fail('kv');
   await assert.rejects(f.run({ apply: true }), (error) => {
     assert(error instanceof Error);
-    assert.match(error.message, /创建结果未知/);
+    assert.match(error.message, /creation result is unknown/);
     assert.ok(!error.message.includes(token));
     assert.ok(!error.message.includes('other-body-password'));
     return true;
@@ -328,7 +331,7 @@ test('API errors expose only status and numeric codes, never server messages or 
     }),
     (error) => {
       assert(error instanceof Error);
-      assert.match(error.message, /HTTP 403，错误码 10000/);
+      assert.match(error.message, /HTTP 403, error codes 10000/);
       assert.ok(!error.message.includes(token));
       assert.ok(!error.message.includes('unrelated-secret'));
       return true;
@@ -342,7 +345,10 @@ test('existing resource IDs cannot be replaced, even if the resource disappeared
   const before = await readFile(f.output, 'utf8');
   const count = f.api.requests.filter((item) => item.method === 'POST').length;
   f.api.data.d1.length = 0;
-  await assert.rejects(f.run({ apply: true }), /拒绝覆盖或重建/);
+  await assert.rejects(
+    f.run({ apply: true }),
+    /Refusing to overwrite or recreate/,
+  );
   assert.equal(await readFile(f.output, 'utf8'), before);
   assert.equal(
     f.api.requests.filter((item) => item.method === 'POST').length,
@@ -369,7 +375,7 @@ test('private R2 check refuses public buckets before creating other resources', 
           return f.api.fetch(url, options);
         },
       }),
-      /目标 R2 桶未确认私有/,
+      /target R2 bucket is not confirmed private/,
     );
   }
   assert.ok(f.api.requests.every((item) => item.method === 'GET'));
@@ -417,7 +423,7 @@ test('zero is an explicit capacity cap and unknown nested settings are never ove
   settings.vars.USER_OWNED = 'preserve me';
   const saved = JSON.stringify(settings);
   await writeFile(f.output, saved);
-  await assert.rejects(f.run({ apply: true }), /未知嵌套配置/);
+  await assert.rejects(f.run({ apply: true }), /unknown nested configuration/);
   assert.equal(await readFile(f.output, 'utf8'), saved);
 });
 
@@ -428,7 +434,7 @@ test('malformed list responses and repeated cursors fail closed without creating
       apply: true,
       fetch: async () => Response.json({ success: true, result: null }),
     }),
-    /响应格式/,
+    /response format/,
   );
   await assert.rejects(
     f.run({
@@ -443,7 +449,7 @@ test('malformed list responses and repeated cursors fail closed without creating
         return f.api.fetch(url, options);
       },
     }),
-    /分页游标重复/,
+    /pagination cursor is repeated/,
   );
   assert.ok(f.api.requests.every((item) => item.method === 'GET'));
 });
@@ -456,7 +462,7 @@ test('CLI rejects token command arguments without echoing them', async () => {
     { cwd: path.resolve(import.meta.dirname, '..'), encoding: 'utf8', env: {} },
   );
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /参数无效/);
+  assert.match(result.stderr, /Invalid arguments/);
   assert.ok(!result.stderr.includes(token));
   assert.equal(result.stdout, '');
 });
@@ -465,7 +471,7 @@ test('output locks and symlinks cannot overwrite user files', async (t) => {
   const { symlink } = await import('node:fs/promises');
   const f = await fixture(t);
   await writeFile(`${f.output}.lock`, 'owned by another process');
-  await assert.rejects(f.run({ apply: true }), /无法锁定/);
+  await assert.rejects(f.run({ apply: true }), /Cannot lock/);
   assert.equal(
     await readFile(`${f.output}.lock`, 'utf8'),
     'owned by another process',
@@ -473,7 +479,7 @@ test('output locks and symlinks cannot overwrite user files', async (t) => {
   await rm(`${f.output}.lock`);
   await symlink(f.input, f.output);
   const before = await readFile(f.input, 'utf8');
-  await assert.rejects(f.run({ apply: true }), /无法安全读取/);
+  await assert.rejects(f.run({ apply: true }), /Cannot safely read/);
   assert.equal(await readFile(f.input, 'utf8'), before);
   assert.equal(f.api.requests.length, 0);
 });

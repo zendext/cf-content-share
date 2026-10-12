@@ -160,7 +160,7 @@ Streamable HTTP 支持 `2025-11-25` 和 `2025-06-18`。`initialize.params.protoc
 - 游标分页不承诺数据库快照。Agent 根据请求继续翻页，服务端不自动取出全部内容；列表项只含基本元数据和链接，完整详情单独查询。
 - 关键词用参数化 `LIKE` 对标题、描述、原文件名作包含匹配，转义 `%`、`_`；ASCII 大小写不敏感，中文按连续文字匹配。
 - 标签按完整标签值筛选；实现默认多个标签需全部匹配。类别、时间、标签等条件与关键词条件取交集。无需分词、相关性排序或额外搜索服务。
-- 错误包含稳定业务码、发生步骤、可重试性和可提供的底层错误信息。敏感凭据必须去除；公开分享错误响应不暴露管理诊断数据。
+- 错误包含稳定业务码、发生步骤、可重试性和可提供的底层错误信息。服务端及维护脚本的诊断消息统一使用英文，客户端按稳定错误码处理，不依赖消息文案。敏感凭据必须去除；公开分享错误响应不暴露管理诊断数据。
 - MCP 结果使用结构化内容，并为客户端兼容提供等价文本 JSON。协议错误、业务错误、部分完成分别表达；部分完成不能只返回 `success: true`。
 - 创建、上传、详情和列表返回 `retention_seconds`、`published_at`、`expires_at`、`accessible` 和 `unavailable_reason`（`pending`、`expired`、`deleted` 或 `null`）；默认列表只包括未到期的已发布资源，按 ID 仍可查失效资源。Cron 尚未处理的到期记录不能在列表中继续作为有效资源显示。
 - Agent 将“再保留 30 天”或“原期限上延长 30 天”转换为明确的 `expires_at` 后提交并保存请求；重复提交同一时间不得变成新的相对续期。普通元数据、目标 URL 修改与访问均不改变期限。
@@ -175,7 +175,7 @@ Streamable HTTP 支持 `2025-11-25` 和 `2025-06-18`。`initialize.params.protoc
   "resource_state": "deleted",
   "operation_status": "retry_pending",
   "steps": { "d1": "completed", "kv": "accepted", "r2_cleanup": "failed" },
-  "error": { "step": "r2_cleanup", "code": "R2_CLEANUP_FAILED", "message": "底层错误信息", "retryable": true },
+  "error": { "step": "r2_cleanup", "code": "R2_CLEANUP_FAILED", "message": "The R2 cleanup operation failed.", "retryable": true },
   "retry_count": 0,
   "next_retry_at": "2026-10-11T04:05:00Z"
 }

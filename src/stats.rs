@@ -81,12 +81,15 @@ fn failure(code: &str, retryable: bool) -> Value {
     let mut value = store::failure(code, "analytics", retryable);
     value["error"]["message"] = json!(match code {
         "INVALID_TIME_RANGE" =>
-            "必须提供最近 30 天内的 UTC Unix 秒区间 [start,end)，且 start < end；不允许未来时间。",
-        "INVALID_TIMEZONE" => "时区必须是平台支持的 IANA 时区名称。",
-        "ANALYTICS_NOT_CONFIGURED" => "统计绑定、数据集、账户或查询密钥未正确配置。",
-        "ANALYTICS_QUERY_FAILED" => "统计平台查询失败；未返回访问量，请稍后重试。",
-        "ANALYTICS_RESPONSE_INVALID" => "统计平台返回无效或超出限制的结果。",
-        _ => "统计查询未完成。",
+            "Provide a UTC Unix timestamp range [start,end) within the last 30 days, with start < end and no future timestamps.",
+        "INVALID_TIMEZONE" => "The timezone must be a platform-supported IANA timezone name.",
+        "ANALYTICS_NOT_CONFIGURED" =>
+            "The analytics binding, dataset, account, or query token is not configured correctly.",
+        "ANALYTICS_QUERY_FAILED" =>
+            "The analytics query failed. No visit counts were returned. Try again later.",
+        "ANALYTICS_RESPONSE_INVALID" =>
+            "The analytics platform returned invalid results or exceeded the query limits.",
+        _ => "The analytics query did not complete.",
     });
     value
 }

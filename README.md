@@ -6,6 +6,8 @@
 
 资源有效期和 KV 24 小时兜底已部署并激活，该版本的本地回归及云端验收见[有效期云端记录](docs/research/2026-10-12-expiration-cloud-acceptance.md)。尚未启用有效期的已有安装，须按[部署与升级](docs/deployment.md#5-正式版本升级)固定一次旧资源计时起点；已完成激活的服务在无新迁移时只更新代码，不重复初始化期限。
 
+通用 TypeScript 上传器已发布，107 项本地测试、真实 MCP／上传和测试资源清理验收通过，详见[本轮上传器验收](docs/research/2026-10-12-generic-upload-cloud-acceptance.md)。
+
 ## 使用的 Cloudflare 基础设施
 
 | 服务 | 用途 |

@@ -20,12 +20,12 @@ CREATE TRIGGER expiration_legacy_insert AFTER INSERT ON resources WHEN NEW.expir
  UPDATE resources SET expires_at=(SELECT activated_at+2592000 FROM expiration_activation WHERE id=1) WHERE id=NEW.id;
 END;
 CREATE TRIGGER expiration_first_insert AFTER INSERT ON resources WHEN NEW.expiration_policy_version=1 AND NEW.state='published' BEGIN
- SELECT CASE WHEN NEW.retention_seconds > 9007199254740991-unixepoch() THEN RAISE(ABORT,'RETENTION_OVERFLOW') END;
+ SELECT RAISE(ABORT,'RETENTION_OVERFLOW') WHERE NEW.retention_seconds > 9007199254740991-unixepoch();
  UPDATE resources SET published_at=unixepoch(),expires_at=unixepoch()+NEW.retention_seconds WHERE id=NEW.id;
 END;
 CREATE TRIGGER expiration_publish_guard BEFORE UPDATE OF state ON resources WHEN OLD.state='pending' AND NEW.state='published' BEGIN
- SELECT CASE WHEN OLD.expires_at <= unixepoch() THEN RAISE(ABORT,'RESOURCE_EXPIRED') END;
- SELECT CASE WHEN OLD.expiration_policy_version=1 AND OLD.retention_seconds > 9007199254740991-unixepoch() THEN RAISE(ABORT,'RETENTION_OVERFLOW') END;
+ SELECT RAISE(ABORT,'RESOURCE_EXPIRED') WHERE OLD.expires_at <= unixepoch();
+ SELECT RAISE(ABORT,'RETENTION_OVERFLOW') WHERE OLD.expiration_policy_version=1 AND OLD.retention_seconds > 9007199254740991-unixepoch();
 END;
 CREATE TRIGGER expiration_first_publish AFTER UPDATE OF state ON resources WHEN OLD.state='pending' AND NEW.state='published' AND NEW.expiration_policy_version=1 BEGIN
  UPDATE resources SET published_at=unixepoch(),expires_at=unixepoch()+NEW.retention_seconds WHERE id=NEW.id;

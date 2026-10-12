@@ -8,16 +8,8 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
-    "types": [
-      "node"
-    ]
+    "types": ["node"]
   },
-  "include": [
-    "scripts/**/*.mts",
-    "skills/**/*.mts",
-    "tests/**/*.mts"
-  ],
-  "exclude": [
-    "tests/*-fixture.mts"
-  ]
+  "include": ["scripts/**/*.mts", "skills/**/*.mts", "tests/**/*.mts"],
+  "exclude": ["tests/*-fixture.mts"]
 }

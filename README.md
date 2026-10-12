@@ -78,12 +78,27 @@ DNS 与两项 Access 权限用于让 Agent 配置域名、应用、团队和身�
 
 ## 本地开发与文档
 
+使用 Node.js 24.12+ 和 rustup。仓库的 `rust-toolchain.toml` 固定 Rust 版本、Wasm target、rustfmt、Clippy 和 rust-analyzer；首次进入仓库时由 rustup 安装所需组件。CI 使用 Node.js 24.21.0。
+
 ```sh
+npm ci
+cargo install worker-build --version 0.8.7 --locked
 npm run db:migrate:local
 npm run dev
 ```
 
 维护的脚本、测试与夹具统一使用 `.mts`，Node.js 24.12+ 原生执行。`npm run check:types` 分别按 Node 与 workerd 环境严格检查全部 TypeScript；测试夹具用 Node 原生类型擦除后交给 workerd。Rust/Wasm 工具链生成的 `build/index.js` 与第三方依赖不纳入 Git，仓库测试会拒绝新增 JavaScript 源文件。
+
+开发检查使用以下统一入口：
+
+- `npm run format`：应用 Biome 格式化、import 整理及安全自动修复，然后执行 `cargo fmt`。
+- `npm run lint`：只检查 Biome、Rust 格式及 Wasm Clippy，警告也会导致失败。
+- `npm run check:types`：严格检查 Node 与 workerd 两套 TypeScript 环境。
+- `npm run check`：依次执行 lint、类型检查、Wasm 构建和全部测试。
+
+Biome 使用推荐规则并遵循 Git 忽略配置；不检查依赖、构建产物和自动生成的 lockfile。测试允许非空断言及回调的 `void` 联合类型，保留夹具已知条件与故障注入的类型表达；业务脚本仍使用推荐规则。VS Code 工作区推荐 rust-analyzer 和 Biome 扩展，启用保存时格式化，Rust 诊断使用 Wasm target 和 Clippy；其他编辑器可使用相同的语言服务与命令。
+
+GitHub Actions 在 PR 和 `main` push 时执行同一个 `npm run check`，并验证本地配置的部署包，不需要 Cloudflare 凭据。
 
 `wrangler.local.jsonc` 使用占位资源，不含生产 Route。本地 MCP 仍验证 Access JWT；`npm run check` 使用独立测试密钥和本地 workerd，覆盖服务、部署初始化及上传脚本，不连接云端。`npm run dry-run` 检查本地配置与发布包。
 

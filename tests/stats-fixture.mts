@@ -1,21 +1,36 @@
 // Local workerd boundary instrumentation; never a production entrypoint.
 import Worker from '../build/index.js';
+
 let points: Parameters<AnalyticsEngineDataset['writeDataPoint']>[0][] = [];
 const logs: string[] = [];
 const originalError = console.error.bind(console);
-console.error = (...args) => { logs.push(args.join(' ')); originalError(...args); };
-let fail = false, failR2Get = false, failCacheDelete = false, r2Reads = 0;
+console.error = (...args) => {
+  logs.push(args.join(' '));
+  originalError(...args);
+};
+let fail = false,
+  failR2Get = false,
+  failCacheDelete = false,
+  r2Reads = 0;
 
 // Wait for the actual platform cache write, without timing sleeps or faking a hit.
-const stored = new Set(), cacheWaiters = new Map<string, () => void>();
+const stored = new Set(),
+  cacheWaiters = new Map<string, () => void>();
 const cachePrototype = Object.getPrototypeOf(caches.default) as Cache;
 const nativePut = cachePrototype.put;
 const nativeDelete = cachePrototype.delete;
-cachePrototype.delete = async function(this: Cache, ...args: Parameters<Cache['delete']>) {
+cachePrototype.delete = async function (
+  this: Cache,
+  ...args: Parameters<Cache['delete']>
+) {
   if (failCacheDelete) throw new Error('injected local cache eviction failure');
   return nativeDelete.apply(this, args);
 };
-cachePrototype.put = async function(this: Cache, key: RequestInfo, response: Response) {
+cachePrototype.put = async function (
+  this: Cache,
+  key: RequestInfo,
+  response: Response,
+) {
   const result = await nativePut.call(this, key, response);
   const url = typeof key === 'string' ? key : key.url;
   stored.add(url);
@@ -29,19 +44,28 @@ export default class extends Worker {
     const files = new Proxy(env.FILES, {
       get(target, key) {
         if (key === 'constructor') return target.constructor;
-        if (key === 'get') return async (...args: Parameters<R2Bucket['get']>) => {
-          r2Reads++;
-          if (failR2Get) throw new Error('injected R2 read failure');
-          return target.get(...args);
-        };
+        if (key === 'get')
+          return async (...args: Parameters<R2Bucket['get']>) => {
+            r2Reads++;
+            if (failR2Get) throw new Error('injected R2 read failure');
+            return target.get(...args);
+          };
         const value = Reflect.get(target, key);
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
-    super(ctx, { ...env, FILES: files, ANALYTICS: { writeDataPoint(point: Parameters<AnalyticsEngineDataset['writeDataPoint']>[0]) {
-      if (fail) throw new Error('secret-must-not-leak');
-      points.push(point);
-    } } });
+    super(ctx, {
+      ...env,
+      FILES: files,
+      ANALYTICS: {
+        writeDataPoint(
+          point: Parameters<AnalyticsEngineDataset['writeDataPoint']>[0],
+        ) {
+          if (fail) throw new Error('secret-must-not-leak');
+          points.push(point);
+        },
+      },
+    });
   }
   async fetch(req: Request) {
     const url = new URL(req.url);
@@ -55,7 +79,8 @@ export default class extends Worker {
       return new Response('ok');
     }
     if (url.pathname === '/test-r2') {
-      if (url.searchParams.has('fail')) failR2Get = url.searchParams.get('fail') === '1';
+      if (url.searchParams.has('fail'))
+        failR2Get = url.searchParams.get('fail') === '1';
       return Response.json({ reads: r2Reads });
     }
     if (url.pathname === '/test-cache-delete') {
@@ -64,7 +89,8 @@ export default class extends Worker {
     }
     if (url.pathname === '/test-cache-wait') {
       const key = url.searchParams.get('url')!;
-      if (!stored.has(key)) await new Promise<void>(resolve => cacheWaiters.set(key, resolve));
+      if (!stored.has(key))
+        await new Promise<void>((resolve) => cacheWaiters.set(key, resolve));
       return new Response('stored');
     }
     return super.fetch(req);

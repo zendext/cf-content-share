@@ -49,7 +49,7 @@
 
 两个操作返回实际 `start` / `end` / `timezone` / `granularity`、`sampling`、`completeness: "unknown"` 和可确认的 `diagnostics`。平台样本的 `has_more` 仅表示本次查询观察到下一页，不代表完整访问日志、固定分页快照或固定误差率。采样及数据到达延迟可能改变续页的可见集合。
 
-排行和样本中的资源，以及显式 resource_id 过滤的顶层 resource，由一次 D1 查询补充 `id`、`title`、`state`，包括已删除资源。元数据缺失时 state 为 `unknown`；D1 失败另附 `RESOURCE_METADATA_UNAVAILABLE`，不改变加权访问量。短链目标修改不重置资源统计，不拆分历次目标。
+排行和样本中的资源，以及显式 resource_id 过滤的顶层 resource，由一次 D1 查询补充 `id`、`title`、`state`、`expires_at`、`published_at`、`deleted_reason`、`accessible` 和 `unavailable_reason`，包括已删除或已到期资源。到期但尚未被 Cron 删除的记录可同时为 `state=published`、`accessible=false`、`unavailable_reason=expired`。元数据缺失时 state 为 `unknown`；D1 失败另附 `RESOURCE_METADATA_UNAVAILABLE`，不改变加权访问量。短链目标修改不重置资源统计，不拆分历次目标。
 
 HTTP / 网络查询失败返回 `ANALYTICS_QUERY_FAILED`，JSON 或结果结构异常返回 `ANALYTICS_RESPONSE_INVALID`；不伪造零访问量。HTTP 200 的平台 error 对象同样脱敏为固定业务错误。读取上限 12 MiB，覆盖最多 101 条样本、每条 16 KiB blob 及 JSON 最坏六倍转义；超限明确失败。
 

@@ -74,6 +74,9 @@ pub async fn retry(env: &Env, id: &str) -> Result<Value> {
 }
 
 pub async fn run(env: &Env) -> Result<()> {
+    if expire(env).await.is_err() {
+        console_error!("EXPIRATION_STORAGE_UNAVAILABLE");
+    }
     let now = store::now();
     // Exhausted executions may have crashed after claiming the tenth attempt.
     env.d1("DB")?.prepare("UPDATE operations SET status='needs_attention', error_code=COALESCE(error_code,'EXECUTION_INTERRUPTED'), next_retry_at=NULL, lease_token=NULL, lease_until=NULL WHERE status='running' AND next_retry_at<=? AND retry_count>=10")
@@ -89,9 +92,13 @@ pub async fn run(env: &Env) -> Result<()> {
 }
 
 async fn recover_file(env: &Env, op: &store::Operation, lease: &str) -> Result<()> {
-    let resource = store::resource(env, &op.resource_id)
+    let mut resource = store::resource(env, &op.resource_id)
         .await?
         .ok_or_else(|| Error::RustError("missing resource".into()))?;
+    if resource.state != "deleted" && resource.expired() {
+        expire_resource(env, &resource.id).await?;
+        resource = store::resource(env, &resource.id).await?.unwrap();
+    }
     if resource.kind == "url" || op.r#type == "resource.update" {
         return Ok(());
     }
@@ -165,11 +172,15 @@ async fn recover_file(env: &Env, op: &store::Operation, lease: &str) -> Result<(
     }
     // A complete owned object proves this attempt's single writer has committed.
     db.batch(vec![
-        db.prepare("UPDATE resources SET state='published',accounting='published' WHERE id=? AND state='pending' AND accounting='reserved' AND EXISTS(SELECT 1 FROM operations WHERE id=? AND lease_token=?)").bind(&[resource.id.clone().into(),op.id.clone().into(),lease.into()])?,
+        db.prepare("UPDATE resources SET state='published',accounting='published' WHERE id=? AND state='pending' AND (expires_at IS NULL OR expires_at>unixepoch()) AND accounting='reserved' AND EXISTS(SELECT 1 FROM operations WHERE id=? AND lease_token=?)").bind(&[resource.id.clone().into(),op.id.clone().into(),lease.into()])?,
         db.prepare("UPDATE operations SET upload_state='none',r2_status='completed' WHERE id=? AND lease_token=?").bind(&[op.id.clone().into(),lease.into()])?
     ]).await.map_err(|_|Error::RustError("D1_PUBLISH_FAILED".into()))?;
     let mut resource = store::resource(env, &resource.id).await?.unwrap();
     resource.file_key = Some(attempt_key);
+    if resource.state == "pending" && resource.expired() {
+        expire_resource(env, &resource.id).await?;
+        resource = store::resource(env, &resource.id).await?.unwrap();
+    }
     if resource.state == "deleted" {
         cleanup(env, op, lease, &resource).await?;
     }
@@ -207,5 +218,31 @@ async fn cleanup(
             true,
         )
         .await;
+    Ok(())
+}
+
+// The condition is evaluated in the write transaction, not against the scan's snapshot.
+async fn expire_resource(env: &Env, id: &str) -> Result<()> {
+    let db = env.d1("DB")?;
+    let operation_id = auth::random_token()?;
+    db.batch(vec![
+        db.prepare("UPDATE resources SET state='deleted',deleted_reason='expired',deleted_at=unixepoch(),target_url=NULL,description='',tags='[]',accounting=CASE WHEN accounting='published' THEN 'cleanup' ELSE accounting END WHERE id=? AND state IN ('pending','published') AND expires_at<=unixepoch()")
+            .bind(&[id.into()])?,
+        db.prepare("INSERT INTO operations(id,type,resource_id,fingerprint,created_at,updated_at,next_retry_at,r2_status) SELECT ?,'resource.delete',id,'expiration',unixepoch(),unixepoch(),unixepoch(),CASE WHEN kind='url' THEN 'none' ELSE 'pending' END FROM resources WHERE id=? AND changes()>0")
+            .bind(&[operation_id.into(),id.into()])?,
+    ]).await?;
+    Ok(())
+}
+async fn expire(env: &Env) -> Result<()> {
+    let rows = env.d1("DB")?.prepare("SELECT id FROM resources WHERE state IN ('pending','published') AND expires_at IS NOT NULL AND expires_at<=unixepoch() ORDER BY expires_at,id LIMIT 25")
+        .all().await?.results::<Value>()?;
+    for row in rows {
+        if expire_resource(env, row["id"].as_str().unwrap())
+            .await
+            .is_err()
+        {
+            console_error!("EXPIRATION_RESOURCE_FAILED");
+        }
+    }
     Ok(())
 }

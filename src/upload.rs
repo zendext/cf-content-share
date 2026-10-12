@@ -117,17 +117,23 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
     let operation_id = metadata["operation_id"].as_str().unwrap().to_owned();
     let size = metadata["size_bytes"].as_u64().unwrap();
     let too_large = store::limit(env, "MAX_FILE_BYTES")?.is_some_and(|limit| size > limit);
-    let fingerprint = store::fingerprint(&metadata);
+    let (fingerprint, legacy_fingerprint) = store::creation_fingerprints(&mut metadata);
     let db = env.d1("DB")?;
     let token = auth::random_token()?;
     // One durable admission transaction reserves capacity and owns this upload attempt.
     for _ in 0..5 {
         if let Some(op) = store::operation(env, &operation_id).await? {
-            if op.r#type != "resource.upload" || op.fingerprint != fingerprint {
+            if op.r#type != "resource.upload"
+                || !(if op.fingerprint_version == 0 {
+                    legacy_fingerprint.as_ref() == Some(&op.fingerprint)
+                } else {
+                    op.fingerprint == fingerprint
+                })
+            {
                 return error("IDEMPOTENCY_CONFLICT", 409);
             }
             let resource = store::resource(env, &op.resource_id).await?.unwrap();
-            if resource.state != "pending" {
+            if resource.state != "pending" || resource.expired() {
                 return json_response(&store::operation_result(env, &operation_id).await?, 200);
             }
             if op.upload_state != "needs_reupload"
@@ -144,13 +150,16 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
             let total =
                 store::limit(env, "TOTAL_STORAGE_BYTES")?.unwrap_or(9_007_199_254_740_991) as f64;
             db.batch(vec![
-                db.prepare("UPDATE resources SET accounting='reserved',file_key=? WHERE id=? AND state='pending' AND accounting='released' AND (SELECT published_bytes+reserved_bytes+cleanup_bytes FROM storage_usage WHERE id=1)<=?-size_bytes AND EXISTS(SELECT 1 FROM operations WHERE id=? AND upload_state='needs_reupload' AND (status!='running' OR lease_until<=?))").bind(&[key.into(),resource.id.into(),total.into(),operation_id.clone().into(),now.into()])?,
+                db.prepare("UPDATE resources SET accounting='reserved',file_key=? WHERE id=? AND state='pending' AND (expires_at IS NULL OR expires_at>unixepoch()) AND accounting='released' AND (SELECT published_bytes+reserved_bytes+cleanup_bytes FROM storage_usage WHERE id=1)<=?-size_bytes AND EXISTS(SELECT 1 FROM operations WHERE id=? AND upload_state='needs_reupload' AND (status!='running' OR lease_until<=?))").bind(&[key.into(),resource.id.into(),total.into(),operation_id.clone().into(),now.into()])?,
                 db.prepare("UPDATE operations SET upload_state='uploading',upload_token=?,status='running',lease_token=?,lease_until=?,next_retry_at=?,updated_at=?,r2_status='pending',retry_count=0,total_attempts=total_attempts+1 WHERE id=? AND changes()>0").bind(&[token.clone().into(),token.clone().into(),(now+UPLOAD_LEASE as f64).into(),(now+UPLOAD_LEASE as f64).into(),now.into(),operation_id.clone().into()])?
             ]).await?;
             break;
         }
         if too_large {
             return error("FILE_TOO_LARGE", 413);
+        }
+        if !store::valid_retention(&metadata) {
+            return error("INVALID_METADATA", 400);
         }
         let id = store::resource_id()?;
         let now = store::now() as f64;
@@ -172,9 +181,9 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
         let total =
             store::limit(env, "TOTAL_STORAGE_BYTES")?.unwrap_or(9_007_199_254_740_991) as f64;
         let result=db.batch(vec![
-            db.prepare("INSERT INTO resources(id,kind,state,title,description,tags,created_at,file_key,filename,content_type,size_bytes,sha256,accounting) SELECT ?,?,'pending',?,?,?,?,?,?,?,?,?,'reserved' WHERE (SELECT published_bytes+reserved_bytes+cleanup_bytes FROM storage_usage WHERE id=1)<=?-?")
-                .bind(&[id.clone().into(),kind.into(),metadata["title"].as_str().unwrap().into(),metadata["description"].as_str().unwrap().into(),metadata["tags"].to_string().into(),now.into(),store::object_key(&id,&token).into(),metadata["filename"].as_str().unwrap().into(),metadata["content_type"].as_str().unwrap().into(),(size as f64).into(),metadata["sha256"].as_str().unwrap().into(),total.into(),(size as f64).into()])?,
-            db.prepare("INSERT INTO operations(id,type,resource_id,fingerprint,status,created_at,updated_at,next_retry_at,lease_token,lease_until,upload_state,upload_token,r2_status,total_attempts) SELECT ?,'resource.upload',?,?,'running',?,?,?,?,?,'uploading',?,'pending',1 WHERE changes()>0")
+            db.prepare("INSERT INTO resources(id,kind,state,title,description,tags,created_at,file_key,filename,content_type,size_bytes,sha256,accounting,expiration_policy_version,retention_seconds) SELECT ?,?,'pending',?,?,?,?,?,?,?,?,?,'reserved',1,? WHERE (SELECT published_bytes+reserved_bytes+cleanup_bytes FROM storage_usage WHERE id=1)<=?-?")
+                .bind(&[id.clone().into(),kind.into(),metadata["title"].as_str().unwrap().into(),metadata["description"].as_str().unwrap().into(),metadata["tags"].to_string().into(),now.into(),store::object_key(&id,&token).into(),metadata["filename"].as_str().unwrap().into(),metadata["content_type"].as_str().unwrap().into(),(size as f64).into(),metadata["sha256"].as_str().unwrap().into(),metadata["retention_seconds"].as_i64().map(|n| wasm_bindgen::JsValue::from(n as f64)).unwrap_or(wasm_bindgen::JsValue::NULL),total.into(),(size as f64).into()])?,
+            db.prepare("INSERT INTO operations(id,type,resource_id,fingerprint,status,created_at,updated_at,next_retry_at,lease_token,lease_until,upload_state,upload_token,r2_status,total_attempts,fingerprint_version) SELECT ?,'resource.upload',?,?,'running',?,?,?,?,?,'uploading',?,'pending',1,1 WHERE changes()>0")
                 .bind(&[operation_id.clone().into(),id.clone().into(),fingerprint.clone().into(),now.into(),now.into(),(now+UPLOAD_LEASE as f64).into(),token.clone().into(),(now+UPLOAD_LEASE as f64).into(),token.clone().into()])?
         ]).await;
         match result {

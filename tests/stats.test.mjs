@@ -127,7 +127,7 @@ test('all fixed aggregate views use weights, common filters and bounded output',
   assert.match(sql,/SUM\(_sample_interval\)/);
   assert.ok(sql.includes(`hex(index1) = '${Buffer.from(resource.id).toString('hex').toUpperCase()}'`));
   assert.ok(sql.includes("hex(blob3) = '75726C'"));
-  if(view==='top')assert.deepEqual(result.items[0].resource,{id:resource.id,title:'Deleted resource',state:'deleted'});
+  if(view==='top')assert.deepEqual(result.items[0].resource,{id:resource.id,title:'Deleted resource',state:'deleted',published_at:resource.published_at,expires_at:resource.expires_at,deleted_reason:'manual',accessible:false,unavailable_reason:'deleted'});
   if(view==='trend')assert.match(sql,/INTERVAL '1' HOUR, 'America\/New_York'/);
   if(view==='regions')assert.equal(result.items[0].city,null);
  }
@@ -318,4 +318,14 @@ test('AE orders projected columns in every aliased statistics view',async()=>{
   const samples=await call('stats.samples',{start,end});
   assert.equal(samples.items[0].event_id,'ABCDEFGHIJKL');
  } finally {projectedOrderOnly=false;}
+});
+
+test('expiration keeps historical weighted visits while exposing current unavailability before and after cleanup',async()=>{
+ const {resource}=await create();const end=now(),start=end-3600;
+ await db.prepare('UPDATE resources SET expires_at=unixepoch()-1 WHERE id=?').bind(resource.id).run();
+ sqlRows=[{resource_id:resource.id,kind:'url',visits:17}];
+ const before=await call('stats.query',{view:'top',start,end});
+ assert.equal(before.items[0].visits,17);assert.equal(before.items[0].resource.state,'published');assert.equal(before.items[0].resource.accessible,false);assert.equal(before.items[0].resource.unavailable_reason,'expired');
+ await (await mf.getWorker()).scheduled({cron:'*/5 * * * *',scheduledTime:Date.now()});
+ const after=await call('stats.query',{view:'top',start,end});assert.equal(after.items[0].visits,17);assert.equal(after.items[0].resource.state,'deleted');assert.equal(after.items[0].resource.deleted_reason,'expired');assert.equal(after.items[0].resource.unavailable_reason,'expired');
 });

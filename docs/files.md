@@ -7,12 +7,18 @@
 1. 经已认证的 MCP 调用 `session.create`，可传 `client` 标识。返回 `session_id`、仅本次返回的 `token`、创建时间、固定 24 小时到期时间，以及上传地址、完整元数据 Schema。
 2. 客户端先记录操作标识、文件大小和 SHA-256，再 `POST /upload`。请求头为 `Authorization: Bearer <token>`；同一会话可上传多份文件。会话列表分页且不返回明文或摘要；撤销和到期阻止新的上传，已受理的上传仍可收尾。
 3. 请求体为 `multipart/form-data`：先一个名为 `metadata` 的 JSON 部分，再一个名为 `file` 的二进制部分，不能添加其他部分。元数据缓冲上限 16 KiB；multipart 边界最多 70 字符，前后封装分别有 256 KiB 读取预算。
-4. 必填字段：`operation_id`、`filename`、`content_type`、`size_bytes`、`sha256`。可选字段：`title`、`description`、`tags`。摘要为 64 位小写十六进制；大小为 0～9007199254740991 的整数。内容类型使用不带参数的 MIME 值，文件名不能含控制字符。具体长度和标签限制以返回 Schema 为准。
+4. 必填字段：`operation_id`、`filename`、`content_type`、`size_bytes`、`sha256`。可选字段：`title`、`description`、`tags`、`retention_seconds`。摘要为 64 位小写十六进制；大小为 0～9007199254740991 的整数。内容类型使用不带参数的 MIME 值，文件名不能含控制字符。具体长度和标签限制以返回 Schema 为准。
 5. `201` 表示资源已经发布，`202` 表示完整对象仍需服务端收尾，`409` 的操作结果表示当前正在处理或不能并发重传，参数冲突返回 `IDEMPOTENCY_CONFLICT`。校验／传输失败返回 `422` 和持久操作、资源状态；认证、元数据或容量在受理前失败时不创建后台上传任务。所有响应禁止缓存。
 
 D1 只保存 Token 的 SHA-256。应用 Token 仅能上传；OAuth 撤销不会自动撤销已签发的应用 Token。客户端应按服务 origin 保存会话和操作标识，状态文件仅当前用户可读，不把 Token 写入日志。
 
 网络结果不明时调用 `operation.get`。已发布或已删除时重试相同创建参数仍返回原资源；不同参数复用标识被拒绝。`steps.upload=needs_reupload` 时，可沿用原操作标识和全部参数重新发送完整文件。同文件名或同摘要的新操作生成独立 12 位 ID，不覆盖、不去重。删除后的 ID 和原操作映射永久保留。
+
+## 资源有效期
+
+`retention_seconds` 省略表示 2592000 秒（30 天），正的安全整数表示自定义时长，显式 `null` 表示永久；发布时间与时长相加必须在安全整数范围内。首次成功发布时在 D1 内固定 `published_at` 和 `expires_at`，等待、重传与恢复不消耗新资源的保留时长，也不重新计时。已迁移的旧 pending 使用统一 `T0 + 30 天`，后续发布保留原截止。
+
+结果同时返回 `accessible`、`unavailable_reason`、`published_at`、`expires_at`；`state=published` 的记录也可能已经到期。未到期的已发布资源可通过 `resource.update` 修改未来的绝对 UTC Unix 秒 `expires_at`，`null` 表示永久，省略表示保持；元数据编辑不改期限。已到期资源不能续期、设永久或恢复发布，仍可按 ID 查询历史状态。默认列表排除已到期项。
 
 ## 存储计数与对象写入
 
@@ -43,17 +49,17 @@ D1 条件写入同时登记资源、操作和容量预留；SQL trigger 在同�
 
 ## 公开读取
 
-`GET/HEAD /r/<id>` 首先校验 KV 状态，缺失、无效或过期时回源 D1；`pending` 映射不作为负缓存使用，避免新发布文件被旧回填挡住。KV 与 D1 都不可用时返回 503，不能直接放行正文缓存。有效快照使用原有 60 秒绝对新鲜度，读取命中不续期。
+`GET/HEAD /r/<id>` 首先校验 KV 状态，缺失、无效或过期时回源 D1；`pending` 映射不作为负缓存使用，避免新发布文件被旧回填挡住。KV 与 D1 都不可用时返回 503，不能直接放行正文缓存。新版快照必须显式含 `expires_at`（允许 `null`）及版本；旧格式回源。快照从最初 D1 读取前的 `observed_at` 起最多有效 86400 秒，KV 也使用同一绝对 `expiration`；命中和迟到回填都不续期，剩余不足 60 秒跳过回填。已知资源期限到点时回源核实是否已续期；确认到期后返回404，不等Cron。
 
-完整 GET 可以命中 Cache API；未命中时从 R2 流式返回。只缓存完整 `200`，缓存副本为 `public, max-age=86400`；浏览器收到 `private, max-age=31536000, immutable`。缓存命中响应先复制可变响应头，正文继续流式读取。写缓存在 `wait_until` 中执行，缓存读写失败不阻断可用的 R2 响应。删除的状态检查先于缓存，局部清除不代表全局清除，无法收回浏览器已有副本。
+完整 GET 可以命中 Cache API；未命中时从 R2 流式返回。只缓存完整 `200`，缓存副本为 `public, max-age=86400`；浏览器收到 `private, max-age=31536000, immutable`。缓存命中响应先复制可变响应头，正文继续流式读取。写缓存在 `wait_until` 中执行，缓存读写失败不阻断可用的 R2 响应。删除与有效期检查先于缓存，GET、HEAD、Range及响应返回前均不能绕过期限；D1确认删除后的旧快照最多存活至其原定24小时截止，届时D1故障返回503。局部清除不代表全局清除，浏览器一年缓存策略不变，无法收回已有副本。
 
 支持单个 `bytes=start-end`、`bytes=start-`、`bytes=-suffix`，有效部分为 206；不可满足或多区间为 416 且不缓存。Range 从 R2 读取，不把 206 写入缓存；HEAD 不带正文，忽略 Range。当前不实现 ETag 协商。
 
-已识别的图片 MIME 使用 inline，其余使用 attachment；文件名同时提供安全 ASCII 回退和 RFC 5987 UTF-8 参数。SVG 保留原字节和 `image/svg+xml`，不附加 CSP 或内容清洗。文件名、类型、大小、摘要与文件 key 发布后不可编辑；仅标题、描述、标签可以编辑，目标 URL 只适用于网址。
+已识别的图片 MIME 使用 inline，其余使用 attachment；文件名同时提供安全 ASCII 回退和 RFC 5987 UTF-8 参数。SVG 保留原字节和 `image/svg+xml`，不附加 CSP 或内容清洗。文件名、类型、大小、摘要与文件 key 发布后不可编辑；未到期前可编辑标题、描述、标签及期限，目标 URL 只适用于网址。
 
 ## 恢复与验证范围
 
-同一个 Worker 的五分钟 Cron 处理到期任务，每批至多 25 项。首次失败后等待 5、10、20、40 分钟，然后每小时一次；每轮最多 10 次自动重试。手动 `operation.retry` 重置本轮计数，保留累计尝试与最近错误。缺失客户端正文的操作保持 `needs_reupload`／`needs_attention`；清理完成不等于上传发布成功。
+同一个 Worker 的五分钟 Cron 先扫描最多 25 条到期资源，再处理最多 25 项已登记恢复任务。到期删除的条件在 D1 写入时重检，避免扫描后续期被误删；逻辑删除和清理任务在同一事务登记，沿用上传屏障与容量释放规则，失败项不阻断其他资源。首次失败后等待 5、10、20、40 分钟，然后每小时一次；每轮最多 10 次自动重试。手动 `operation.retry` 重置本轮计数，保留累计尝试与最近错误。缺失客户端正文的操作保持 `needs_reupload`／`needs_attention`；清理完成不等于上传发布成功。
 
 本地检查：
 
@@ -63,10 +69,10 @@ CARGO_TARGET_DIR="$PWD/target" PATH="$HOME/.cargo/bin:$PATH" npm run check
 node --test tests/r2-fencing.test.mjs
 ```
 
-使用独立 target 目录避免多个同名 Cargo 工程在并行工作树中共用构建产物。测试通过真实 workerd、D1、KV、R2、Cache API 与官方 MCP SDK 执行；故障只注入测试入口的绑定、定时器和 D1 trigger，不存在生产故障开关。迁移测试先建立 0001 的网址和操作，再执行 0002，检查旧分享地址与外键。
+使用独立 target 目录避免多个同名 Cargo 工程在并行工作树中共用构建产物。测试通过真实 workerd、D1、KV、R2、Cache API 与官方 MCP SDK 执行；故障只注入测试入口的绑定、定时器和 D1 trigger，不存在生产故障开关。迁移测试先建立 0001 的网址和操作，再执行 0002、0003；覆盖激活前不倒计时、旧 published/pending/deleted、统一 T0、晚到旧插入、手动永久与旧操作重放，检查旧分享地址与外键。
 
 本地 R2 实验 `tests/r2-fencing.test.mjs`：一个两字节 FixedLengthStream 先交付一字节，另一请求在同 key 建立屏障，原流再提交剩余字节。实测原 put 返回 null，屏障保持不变。API 的条件写入与强一致性依据见 [R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/) 与 [一致性说明](https://developers.cloudflare.com/r2/reference/consistency/)。该实验仅证明本地 workerd 行为，不能替代云端并发与跨节点验证。
 
-正式服务已部署，真实 32 MiB 上传、摘要回读、SVG、Range、会话撤销和文件统计的云端结果见[正式验收记录](research/2026-10-11-formal-cloud-acceptance.md)。未验证项仍包括 Hermes、跨节点 KV 传播、浏览器长期复用和云端 R2 并发故障恢复；本地故障证据不代替这些范围。
+基础服务已部署，本次期限与 KV 规则仍待云端发布验收。历史真实 32 MiB 上传、摘要回读、SVG、Range、会话撤销和文件统计的云端结果见[正式验收记录](research/2026-10-11-formal-cloud-acceptance.md)。未验证项仍包括 Hermes、跨节点 KV 传播、浏览器长期复用和云端 R2 并发故障恢复；本地故障证据不代替这些范围。
 
 2026-10-11 本地验证记录：`npm run check` 退出码 0，38 项测试通过、0 失败（37 项正式服务测试和 1 项 R2 并发原语实验）；Rust fmt 和 wasm32 clippy 未报告警告。160 MiB 流式测试记录的 Wasm 内存为 1,507,328 字节。`npm run dry-run` 只检查本地构建及绑定，不上传 Worker 或创建云端资源。`git diff --check` 通过。

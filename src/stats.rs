@@ -397,7 +397,7 @@ pub async fn query(env: &Env, args: &Value, samples: bool) -> Result<Value> {
             let values: Vec<JsValue> = ids.iter().map(|id| JsValue::from_str(id)).collect();
             env.d1("DB")?
                 .prepare(format!(
-                    "SELECT id,title,state FROM resources WHERE id IN ({placeholders})"
+                    "SELECT id,title,state,expires_at,published_at,deleted_reason,CASE WHEN state='published' AND (expires_at IS NULL OR expires_at>unixepoch()) THEN 1 ELSE 0 END AS accessible,CASE WHEN state='deleted' THEN CASE WHEN deleted_reason='expired' THEN 'expired' ELSE 'deleted' END WHEN expires_at<=unixepoch() THEN 'expired' WHEN state='pending' THEN 'pending' ELSE NULL END AS unavailable_reason FROM resources WHERE id IN ({placeholders})"
                 ))
                 .bind(&values)?
                 .all()
@@ -407,7 +407,8 @@ pub async fn query(env: &Env, args: &Value, samples: bool) -> Result<Value> {
         .await;
         match lookup {
             Ok(rows) => {
-                for row in rows {
+                for mut row in rows {
+                    row["accessible"] = json!(row["accessible"] == 1);
                     if let Some(id) = row["id"].as_str() {
                         metadata.insert(id.to_owned(), row);
                     }

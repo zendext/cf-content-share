@@ -18,6 +18,7 @@ function jwt(changes = {}, header = {}) {
 }
 let mf, db, kv, client;
 let failPut = false, failGet = false, collide = false;
+let onD1Before,onD1After,onD1Batch;
 let onPut,onR2Put,onR2Stored,onR2Delete,onHeartbeat,onCachePut,onCacheStored;
 let failCacheRead=false,failCacheWrite=false,failR2Get=false;
 let limits={};
@@ -53,6 +54,7 @@ before(async () => {
     d1Databases: ['DB'], kvNamespaces: ['MAPPINGS'], r2Buckets: ['FILES'],
     serviceBindings: { FAULTS: async req => {
       const path = new URL(req.url).pathname;
+      if(path.startsWith('/d1-')){const handler=path==='/d1-before'?onD1Before:path==='/d1-after'?onD1After:onD1Batch;if(handler && await handler(await req.json())===false)return new Response('failed',{status:503});}
       if (path === '/request') { const result = Response.json({ collide, offset: clockOffset, limits }); collide = false; return result; }
       if(path==='/r2-get' && failR2Get)return new Response('failed',{status:503});
       if(path==='/cache-match' && failCacheRead)return new Response('failed',{status:503});
@@ -79,6 +81,7 @@ before(async () => {
   await db.exec((await readFile('migrations/0001_resources.sql', 'utf8')).replaceAll('\n', ' '));
   await db.exec("INSERT INTO resources(id,kind,state,target_url,title,created_at) VALUES('LegacyUrl001','url','published','https://example.com/legacy','legacy',1); INSERT INTO operations(id,type,resource_id,fingerprint,created_at,updated_at,next_retry_at) VALUES('legacy-op','resource.create_url','LegacyUrl001','legacy-fingerprint',1,1,0)");
   await db.exec((await readFile('migrations/0002_files.sql', 'utf8')).replace(/^--.*$/gm, '').replaceAll('\n', ' '));
+  await db.exec((await readFile('migrations/0003_expiration.sql', 'utf8')).replace(/^--.*$/gm, '').replaceAll('\n', ' '));
   client = new Client({ name: 'service-test', version: '1.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(origin + '/mcp'), {
     fetch: (url, init) => mf.dispatchFetch(String(url), init),
@@ -303,10 +306,10 @@ test('KV absolute freshness rejects expired/malformed/negative entries and does 
   const result = await create();
   const id = result.resource.id;
   const original = JSON.parse(await kv.get(id));
-  assert.equal(original.valid_until - original.observed_at, 60);
+  assert.equal(original.valid_until - original.observed_at, 86400);
   await request('/r/' + id, { redirect: 'manual' });
   assert.deepEqual(JSON.parse(await kv.get(id)), original);
-  for (const value of [JSON.stringify({ ...original, observed_at: now() - 61, valid_until: now() - 1, target_url: 'https://example.com/stale' }), 'bad-json', JSON.stringify({ ...original, state: 'missing' }), JSON.stringify({ ...original, valid_until: now() + 600 }), JSON.stringify({ ...original, target_url: 'javascript:alert(1)' })]) {
+  for (const value of [JSON.stringify({ ...original, observed_at: now() - 86401, valid_until: now() - 1, target_url: 'https://example.com/stale' }), 'bad-json', JSON.stringify({ ...original, state: 'missing' }), JSON.stringify({ ...original, valid_until: now() + 600 }), JSON.stringify({ ...original, target_url: 'javascript:alert(1)' })]) {
     await kv.put(id, value);
     const response = await request('/r/' + id, { redirect: 'manual' });
     assert.equal(response.status, 302);
@@ -407,12 +410,12 @@ test('delayed backfill competing with deletion cannot renew its old snapshot', {
   try {
     await waiting;
     await call('resource.delete', { resource_id: id });
-    clockOffset = 61000;
+    clockOffset = 86401000;
     release();
     await reading;
     const stored = JSON.parse(await kv.get(id));
     assert.deepEqual(stored, snapshot);
-    assert.equal(stored.valid_until, snapshot.observed_at + 60);
+    assert.equal(stored.valid_until, snapshot.observed_at + 86400);
     assert.equal((await request('/r/' + id)).status, 404);
     assert.equal(JSON.parse(await kv.get(id)).state, 'deleted');
   } finally { release(); await reading; onPut = undefined; clockOffset = 0; }
@@ -540,9 +543,9 @@ test('length/hash/framing failures release only fenced reservations and allow sa
 test('complete owned object is recovered after D1 publication failure',async()=>{
  const {token}=await call('session.create');const form=multipart(Buffer.from('publish recovery'));
  await db.exec("CREATE TRIGGER fail_publish BEFORE UPDATE ON resources WHEN NEW.state='published' AND OLD.state='pending' BEGIN SELECT RAISE(ABORT,'publish failed'); END");
- let result;try{const response=await upload(token,form);assert.equal(response.status,202);result=await response.json();assert.equal(result.resource.accounting,'reserved');assert.equal(result.resource.state,'pending');}finally{await db.exec('DROP TRIGGER fail_publish');}
+ let result;try{const response=await upload(token,form);assert.equal(response.status,202);result=await response.json();assert.equal(result.resource.accounting,'reserved');assert.equal(result.resource.state,'pending');assert.equal(result.resource.published_at,null);assert.equal(result.resource.expires_at,null);}finally{await db.exec('DROP TRIGGER fail_publish');}
  await db.prepare('UPDATE operations SET next_retry_at=0,lease_until=0 WHERE id=?').bind(form.metadata.operation_id).run();await cron();
- const recovered=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(recovered.resource.state,'published');assert.equal(recovered.resource.id,result.resource.id);assert.equal(await (await request('/r/'+result.resource.id)).text(),'publish recovery');
+ const recovered=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(recovered.resource.state,'published');assert.equal(recovered.resource.expires_at-recovered.resource.published_at,2592000);assert.equal(recovered.resource.id,result.resource.id);assert.equal(await (await request('/r/'+result.resource.id)).text(),'publish recovery');
 });
 
 test('concurrent capacity admission and duplicate retries never overreserve or double count',async()=>{
@@ -697,7 +700,7 @@ test('expired old recovery cannot fence or release the next upload attempt', {ti
  const {token}=await call('session.create');const data=Buffer.from('next attempt'),form=multipart(data);const broken={...form,body:form.body.subarray(0,form.body.length-12)};
  assert.equal((await upload(token,broken)).status,422);const failed=await call('operation.get',{operation_id:form.metadata.operation_id});
  await call('operation.retry',{operation_id:form.metadata.operation_id});
- const entered=deferred(),release=deferred();onPut=async mapping=>{if(mapping.id===failed.resource.id && mapping.state==='pending'){entered.resolve();await release.promise;}};
+ const entered=deferred(),release=deferred();let blocked=false;onD1Before=async({sql,bindings})=>{if(!blocked && sql.startsWith('UPDATE operations SET kv_status=') && bindings.includes(form.metadata.operation_id)){blocked=true;entered.resolve();await release.promise;}};
  const recovering=cron();
  try{
   await entered.promise;
@@ -706,7 +709,7 @@ test('expired old recovery cannot fence or release the next upload attempt', {ti
   const response=await upload(token,form);assert.equal(response.status,201,await response.clone().text());const result=await response.json();assert.notEqual(result.resource.file_key,failed.resource.file_key);
   release.resolve();await recovering;
   const current=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(current.resource.accounting,'published');assert.equal(current.operation.status,'completed');assert.equal(await (await request('/r/'+current.resource.id)).text(),'next attempt');
- }finally{release.resolve();await recovering;onPut=undefined;}
+ }finally{release.resolve();await recovering;onD1Before=undefined;}
 });
 
 test('KV failure does not hide successful file deletion and failed-upload deletion acknowledges prior cleanup',async()=>{
@@ -751,4 +754,173 @@ test('request stream interruption keeps a recoverable unpublished operation', {t
   }
   const recovered=await call('operation.get',{operation_id:form.metadata.operation_id});assert.equal(recovered.resource.accounting,'released');assert.equal(recovered.operation.steps.upload,'needs_reupload');
  }finally{onR2Put=undefined;await pending.catch(()=>{});}
+});
+
+ test('expiration defaults to thirty days from first publication', async () => {
+ const result = await create();
+ assert.equal(typeof result.resource.published_at, 'number');
+ assert.equal(result.resource.expires_at-result.resource.published_at,2592000);
+ assert.equal(result.resource.accessible,true);
+ assert.equal(result.resource.unavailable_reason,null);
+ });
+
+test('expiration policies validate, remain idempotent, and edits use absolute deadlines', async () => {
+ for (const retention_seconds of [0,-1,1.5,'60',true,9007199254740991,9007199254740992]) {
+  await errorCall('resource.create_url',{operation_id:randomUUID(),target_url:'https://example.com',retention_seconds},'INVALID_ARGUMENTS');
+ }
+ const args={operation_id:randomUUID(),target_url:'https://example.com',retention_seconds:120};
+ const created=await call('resource.create_url',args);const id=created.resource.id;
+ assert.equal(created.resource.expires_at-created.resource.published_at,120);
+ const deadline=now()+900;
+ const edited=await call('resource.update',{resource_id:id,expires_at:deadline});
+ assert.equal(edited.resource.expires_at,deadline);
+ assert.equal((await call('resource.update',{resource_id:id,expires_at:deadline})).resource.expires_at,deadline);
+ assert.equal((await call('resource.update',{resource_id:id,title:'unchanged expiry'})).resource.expires_at,deadline);
+ assert.equal((await call('resource.create_url',args)).resource.expires_at,deadline);
+ await errorCall('resource.create_url',{...args,retention_seconds:121},'IDEMPOTENCY_CONFLICT');
+ for(const expires_at of [0,now(),now()-1,1.5,'60',false,9007199254740992])await errorCall('resource.update',{resource_id:id,expires_at},'INVALID_ARGUMENTS');
+ assert.equal((await call('resource.update',{resource_id:id,expires_at:null})).resource.expires_at,null);
+ const permanent=await create({retention_seconds:null});assert.equal(permanent.resource.expires_at,null);assert.equal(typeof permanent.resource.published_at,'number');
+ const defaultArgs={operation_id:randomUUID(),target_url:'https://example.com'};
+ const standard=await call('resource.create_url',defaultArgs);
+ assert.equal((await call('resource.create_url',{...defaultArgs,retention_seconds:2592000})).resource.id,standard.resource.id);
+});
+
+test('expiration publication policies apply to files and images without restart on retry', async () => {
+ for(const changes of [{},{retention_seconds:75},{retention_seconds:null,content_type:'image/png'}]){
+  const result=await uploaded(Buffer.from('policy'),changes);
+  assert.equal(result.resource.expires_at,changes.retention_seconds===null?null:result.resource.published_at+(changes.retention_seconds??2592000));
+  const retry=await (await upload(result.token,result.form)).json();assert.equal(retry.resource.published_at,result.resource.published_at);assert.equal(retry.resource.expires_at,result.resource.expires_at);
+ }
+ const {token}=await call('session.create');
+ for(const retention_seconds of [0,-1,1.5,'60',true,9007199254740991])assert.equal((await upload(token,multipart(Buffer.from('invalid'),{retention_seconds}))).status,400);
+});
+
+test('expiration denies uncached GET HEAD Range and excludes lists before Cron while preserving details', async () => {
+ const item=await uploaded(Buffer.from('expiration body'));const id=item.resource.id;const path='/r/'+id;
+ const initial=await request(path);assert.equal(initial.status,200);assert.equal(initial.headers.get('cache-control'),'private, max-age=31536000, immutable');await initial.arrayBuffer();
+ await db.prepare('UPDATE resources SET expires_at=unixepoch()-1 WHERE id=?').bind(id).run();await kv.delete(id);
+ for(const init of [{},{method:'HEAD'},{headers:{range:'bytes=0-2'}}])assert.equal((await request(path,init)).status,404);
+ const detail=await call('resource.get',{resource_id:id});assert.equal(detail.resource.state,'published');assert.equal(detail.resource.accessible,false);assert.equal(detail.resource.unavailable_reason,'expired');
+ assert(!(await call('resource.list')).items.some(resource=>resource.id===id));
+ await errorCall('resource.update',{resource_id:id,expires_at:null},'RESOURCE_EXPIRED');
+ await errorCall('resource.update',{resource_id:id,title:'revive'},'RESOURCE_EXPIRED');
+ const marker=JSON.parse(await kv.get(id));assert.equal(marker.state,'expired');
+ onD1Before=()=>false;
+ try{assert.equal((await request(path)).status,404);}finally{onD1Before=undefined;}
+});
+
+test('expiration cache hits avoid D1, old formats refresh, stale expiry verifies renewal, expired snapshots fail closed', async () => {
+ const item=await create();const id=item.resource.id;const path='/r/'+id;const original=JSON.parse(await kv.get(id));
+ onD1Before=()=>false;
+ try{assert.equal((await request(path,{redirect:'manual'})).status,302);}finally{onD1Before=undefined;}
+ assert.deepEqual(JSON.parse(await kv.get(id)),original);
+ const legacy={...original};delete legacy.expires_at;await kv.put(id,JSON.stringify(legacy));
+ let reads=0;onD1Before=({sql})=>{if(sql==='SELECT * FROM resources WHERE id=?')reads++;};
+ try{assert.equal((await request(path,{redirect:'manual'})).status,302);assert.equal(reads,1);}finally{onD1Before=undefined;}
+ await kv.put(id,JSON.stringify({...original,expires_at:now()-1}));
+ assert.equal((await request(path,{redirect:'manual'})).status,302);
+ assert.equal(JSON.parse(await kv.get(id)).expires_at,item.resource.expires_at);
+ await kv.put(id,JSON.stringify({...original,observed_at:now()-86400,valid_until:now()}));onD1Before=()=>false;
+ try{for(const init of [{},{method:'HEAD'},{headers:{range:'bytes=0-1'}}])assert.equal((await request(path,init)).status,503);}finally{onD1Before=undefined;}
+});
+
+test('expiration crossing a delayed D1 read rechecks a concurrent renewal before writing a denial', async () => {
+ const item=await create({retention_seconds:100});const id=item.resource.id;await kv.delete(id);let reads=0;
+ onD1After=async({sql})=>{if(sql==='SELECT * FROM resources WHERE id=?' && ++reads===1){await db.prepare('UPDATE resources SET expires_at=? WHERE id=?').bind(now()+1000,id).run();clockOffset=101000;}};
+ try{const response=await request('/r/'+id,{redirect:'manual'});assert.equal(response.status,302);assert.equal(reads,2);assert.equal(JSON.parse(await kv.get(id)).state,'published');}finally{onD1After=undefined;clockOffset=0;}
+});
+
+test('expiration edit and Cron eligibility are checked inside their write transaction', async () => {
+ const item=await create();const id=item.resource.id;
+ onD1Batch=async({sql})=>{if(sql.startsWith('UPDATE resources SET target_url=')){onD1Batch=undefined;await db.prepare('UPDATE resources SET expires_at=unixepoch()-1 WHERE id=?').bind(id).run();}};
+ try{await errorCall('resource.update',{resource_id:id,expires_at:null},'RESOURCE_EXPIRED');}finally{onD1Batch=undefined;}
+ onD1Batch=async({sql})=>{if(sql.startsWith("UPDATE resources SET state='deleted',deleted_reason='expired'")){onD1Batch=undefined;await db.prepare('UPDATE resources SET expires_at=unixepoch()+1000 WHERE id=?').bind(id).run();}};
+ try{await cron();}finally{onD1Batch=undefined;}
+ assert.equal((await call('resource.get',{resource_id:id})).resource.state,'published');
+ assert.equal((await db.prepare("SELECT count(*) AS count FROM operations WHERE resource_id=? AND type='resource.delete'").bind(id).first()).count,0);
+});
+
+test('expiration Cron isolates a failed candidate and R2 cleanup, then retries without duplicate release', async () => {
+ const blocked=await create();const item=await uploaded(Buffer.from('cleanup expiry'));const id=item.resource.id;
+ await db.prepare('UPDATE resources SET expires_at=unixepoch()-1 WHERE id IN (?,?)').bind(blocked.resource.id,id).run();
+ await db.exec(`CREATE TRIGGER reject_one_expiry BEFORE UPDATE OF state ON resources WHEN NEW.id='${blocked.resource.id}' AND NEW.state='deleted' BEGIN SELECT RAISE(ABORT,'fixture'); END`);
+ const usage=await call('storage.get');onR2Delete=()=>false;
+ try{await cron();}finally{onR2Delete=undefined;await db.exec('DROP TRIGGER reject_one_expiry');}
+ const detail=await call('resource.get',{resource_id:id});assert.equal(detail.resource.state,'deleted');assert.equal(detail.resource.deleted_reason,'expired');assert.equal(detail.resource.accounting,'cleanup');assert.equal(detail.operation.steps.kv,'accepted');assert.equal((await request('/r/'+id)).status,404);
+ assert.equal((await call('storage.get')).cleanup_bytes,usage.cleanup_bytes+item.resource.size_bytes);
+ await db.prepare('UPDATE operations SET next_retry_at=0 WHERE resource_id=?').bind(id).run();await cron();await cron();
+ assert.equal((await call('resource.get',{resource_id:id})).resource.accounting,'released');
+ assert.equal((await db.prepare("SELECT count(*) AS count FROM operations WHERE resource_id=? AND type='resource.delete'").bind(id).first()).count,1);
+ assert.equal((await call('storage.get')).cleanup_bytes,usage.cleanup_bytes);
+});
+
+test('expiration activation is explicit, fixed, preserves permanent edits and old operation fingerprints', async () => {
+ assert.equal(await db.prepare('SELECT * FROM expiration_activation').first(),null);
+ assert.equal((await call('resource.get',{resource_id:'LegacyUrl001'})).resource.expires_at,null);
+ const legacyArgs={operation_id:'legacy-expiration-retry',target_url:'https://example.com/legacy-retry'};
+ const payload={description:'',tags:[],target_url:legacyArgs.target_url,title:''};
+ const fingerprint=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+ await db.prepare("INSERT INTO resources(id,kind,state,target_url,created_at) VALUES('LegacyUrl002','url','published',?,1)").bind(legacyArgs.target_url).run();
+ await db.prepare("INSERT INTO operations(id,type,resource_id,fingerprint,created_at,updated_at,next_retry_at) VALUES(?,'resource.create_url','LegacyUrl002',?,1,1,0)").bind(legacyArgs.operation_id,fingerprint).run();
+ await db.exec("INSERT INTO resources(id,kind,state,target_url,created_at) VALUES('LegacyGone01','url','deleted',NULL,1); INSERT INTO resources(id,kind,state,target_url,created_at) VALUES('LegacyPend01','url','pending','https://example.com/pending',1)");
+ await db.exec('INSERT OR IGNORE INTO expiration_activation(id) VALUES(1)');
+ const activation=await db.prepare('SELECT * FROM expiration_activation').first();assert(activation.activated_at>=now()-2);
+ const old=(await call('resource.get',{resource_id:'LegacyUrl002'})).resource;
+ assert.equal(old.expires_at,activation.activated_at+2592000);assert.equal(old.published_at,null);
+ assert.equal((await call('resource.create_url',legacyArgs)).resource.id,old.id);
+ await errorCall('resource.create_url',{...legacyArgs,retention_seconds:null},'IDEMPOTENCY_CONFLICT');
+ await call('resource.update',{resource_id:old.id,expires_at:null});
+ await db.exec('INSERT OR IGNORE INTO expiration_activation(id) VALUES(1)');
+ assert.deepEqual(await db.prepare('SELECT * FROM expiration_activation').first(),activation);
+ assert.equal((await call('resource.create_url',legacyArgs)).resource.expires_at,null);
+ await db.exec("UPDATE resources SET state='published' WHERE id='LegacyPend01'; INSERT INTO resources(id,kind,state,target_url,created_at) VALUES('LegacyLate01','url','published','https://example.com/late',1)");
+ for(const id of ['LegacyPend01','LegacyLate01'])assert.equal((await call('resource.get',{resource_id:id})).resource.expires_at,activation.activated_at+2592000);
+ const deleted=(await call('resource.get',{resource_id:'LegacyGone01'})).resource;assert.equal(deleted.state,'deleted');assert.equal(deleted.expires_at,null);
+});
+
+test('expiration delayed snapshots retain absolute platform expiration and skip writes below sixty seconds',async()=>{
+ const item=await create();const id=item.resource.id;const original=JSON.parse(await kv.get(id));
+ assert.equal((await kv.list()).keys.find(key=>key.name===id).expiration,original.valid_until);
+ await kv.delete(id);let writes=0;
+ onPut=()=>{writes++;};onD1After=({sql})=>{if(sql==='SELECT * FROM resources WHERE id=?')clockOffset=86350000;};
+ try{assert.equal((await request('/r/'+id,{redirect:'manual'})).status,302);assert.equal(writes,0);assert.equal(await kv.get(id),null);}finally{onPut=undefined;onD1After=undefined;clockOffset=0;}
+});
+
+test('expiration legacy pending upload never publishes after deadline and retains its active writer reservation', {timeout:10000},async()=>{
+ const release=deferred(),entered=deferred();onR2Put=async event=>{if(event.options.customMetadata.role!=='fence'){entered.resolve();await release.promise;}};
+ const {token}=await call('session.create');const form=multipart(Buffer.from('expire during upload'));const uploading=upload(token,form);
+ try{
+  await entered.promise;const pending=await call('operation.get',{operation_id:form.metadata.operation_id});const id=pending.resource.id;
+  assert.equal(pending.resource.published_at,null);assert.equal(pending.resource.expires_at,null);
+  await db.prepare('UPDATE resources SET expiration_policy_version=0,expires_at=unixepoch()-1 WHERE id=?').bind(id).run();
+  await cron();const expired=await call('resource.get',{resource_id:id});assert.equal(expired.resource.state,'deleted');assert.equal(expired.resource.deleted_reason,'expired');assert.equal(expired.resource.accounting,'reserved');assert.equal(expired.operation.last_error.code,'UPLOAD_ACTIVE');assert.equal((await request('/r/'+id)).status,404);
+  release.resolve();const response=await uploading;const completed=await response.json();assert.equal(completed.resource.state,'deleted');assert.equal(completed.resource.published_at,null);assert.equal(completed.resource.accounting,'released');
+  assert.equal((await upload(token,form)).status,200);assert.equal((await call('operation.get',{operation_id:form.metadata.operation_id})).resource.state,'deleted');
+ }finally{release.resolve();await uploading;onR2Put=undefined;}
+});
+
+test('expiration retries keep a once-valid near-limit duration even when a later new creation would overflow',async()=>{
+ const args={operation_id:randomUUID(),target_url:'https://example.com',retention_seconds:Number.MAX_SAFE_INTEGER-now()-10};
+ const created=await call('resource.create_url',args);clockOffset=20000;
+ try{const retry=await call('resource.create_url',args);assert.equal(retry.resource.id,created.resource.id);assert.equal(retry.resource.expires_at,created.resource.expires_at);}finally{clockOffset=0;}
+});
+
+
+test('expiration old upload fingerprints survive migration edits and cannot override retained expiry',async()=>{
+ const item=await uploaded(Buffer.from('legacy upload retry'));const id=item.resource.id;
+ const canonical={...item.form.metadata,title:'',description:'',tags:[]};
+ const fingerprint=createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.keys(canonical).sort().map(key=>[key,canonical[key]])))).digest('hex');
+ await db.prepare('UPDATE operations SET fingerprint_version=0,fingerprint=? WHERE id=?').bind(fingerprint,item.form.metadata.operation_id).run();
+ await db.prepare('UPDATE resources SET expiration_policy_version=0,published_at=NULL,expires_at=? WHERE id=?').bind(now()+1000,id).run();
+ await call('resource.update',{resource_id:id,expires_at:null});
+ const response=await upload(item.token,item.form);assert.equal(response.status,200);const result=await response.json();assert.equal(result.resource.id,id);assert.equal(result.resource.expires_at,null);assert.equal(result.resource.published_at,null);
+ assert.equal((await upload(item.token,multipart(Buffer.from('legacy upload retry'),{...item.form.metadata,retention_seconds:null}))).status,409);
+});
+
+
+test('expiration edit racing manual deletion reports the winning permanent deletion',async()=>{
+ const item=await create();const id=item.resource.id;
+ onD1Batch=async({sql})=>{if(sql.startsWith('UPDATE resources SET target_url=')){onD1Batch=undefined;await db.prepare("UPDATE resources SET state='deleted',deleted_reason='manual',deleted_at=unixepoch() WHERE id=?").bind(id).run();}};
+ try{await errorCall('resource.update',{resource_id:id,expires_at:null},'RESOURCE_DELETED');}finally{onD1Batch=undefined;}
 });

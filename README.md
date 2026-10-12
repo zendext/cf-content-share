@@ -2,6 +2,10 @@
 
 单人自部署的内容分享服务：把网址变成短链，把图片和文件上传后生成分享链接，通过 MCP 让 Agent 管理内容、搜索资源和查询访问统计。持有链接即可访问；管理操作需要登录，不提供独立管理网页。
 
+新资源默认从首次发布起保留 30 天，创建时可自定义时长或设为永久；未到期前可以调整截止时间，分享地址不变。到期后服务端拒绝新请求并异步清理，浏览器已缓存的副本不会被收回。
+
+当前代码已实现资源有效期和 KV 24 小时兜底；本轮完整本地回归已通过，云端迁移和发布验收尚待完成，状态见[实现进度](docs/plan/implementation.md)。已有安装升级必须按[部署与升级](docs/deployment.md#5-正式版本升级)固定一次旧资源计时起点，不能直接只发布 Worker。
+
 ## 使用的 Cloudflare 基础设施
 
 | 服务 | 用途 |
@@ -68,7 +72,7 @@ DNS 与两项 Access 权限用于让 Agent 配置域名、应用、团队和身�
 
 仓库提供 [cf-content-share Skill](skills/cf-content-share/SKILL.md) 和无 npm 依赖的[上传脚本](skills/cf-content-share/scripts/upload.mjs)。将整个 `skills/cf-content-share` 目录复制到 `~/.agents/skills/cf-content-share`，保留 `scripts/` 子目录；已有同名安装时先核对，不直接覆盖。Skill 需要 Node.js 22+ 和已登录的 MCP 连接。
 
-典型请求：`用 $cf-content-share 把这个 PDF 分享出去，标题为“会议资料”`。Skill 指导 Agent 通过 MCP 创建会话，再用 HTTP 上传正文；安装 Skill 不会自动上传文件。上传结果不明时按 Skill 查询原操作，不要直接重新上传。
+典型请求：`用 $cf-content-share 把这个 PDF 分享出去，标题为“会议资料”，保留 7 天`。Skill 指导 Agent 通过 MCP 创建会话，再用 HTTP 上传正文；安装 Skill 不会自动上传文件。上传结果不明时按 Skill 查询原操作，不要直接重新上传。
 
 ## 本地开发与文档
 

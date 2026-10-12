@@ -88,7 +88,7 @@ Analytics Engine 没有这里需要调用的建库 API：CLI 只生成 `ANALYTIC
 
 ## 4. 迁移、Secrets 与发布
 
-下面操作会修改云端状态，应在核对计划、数据库名和目标域名后单独执行。首次安装使用初始化入口生成的正式资源绑定。
+下面是新安装步骤，会修改云端状态，应在核对计划、数据库名和目标域名后单独执行。首次安装使用初始化入口生成的正式资源绑定；已有服务应用0003及首次激活必须走第5节维护窗口，不直接照抄新安装命令。
 
 使用一个 Token 的完整命令如下，在 Bash / Zsh 逐步执行；不要开启 `set -x`。DNS 和 Access 须已配置。`read` 时粘贴 Token 后按回车，不将明文放入命令历史：
 
@@ -102,10 +102,12 @@ npx wrangler deploy --dry-run --config wrangler.cloud.json
 npx wrangler d1 migrations apply DB --remote --config wrangler.cloud.json
 printf '%s' "$CLOUDFLARE_API_TOKEN" | npx wrangler secret put ANALYTICS_API_TOKEN --config wrangler.cloud.json
 npx wrangler deploy --config wrangler.cloud.json
+node scripts/activate-expiration.mjs --config wrangler.cloud.json
+node scripts/activate-expiration.mjs --config wrangler.cloud.json --apply
 unset CLOUDFLARE_API_TOKEN
 ```
 
-使用 Token 文件的 Agent 也须在运行 Wrangler 的子进程环境中设置 `CLOUDFLARE_API_TOKEN`，向 `secret put` 的标准输入传入选定统计 Token；`--token-file` 只对初始化 CLI 生效。单 Token 方案使运行时 Secret 也拥有部署写权限；下方说明如何改用独立只读统计 Token。
+使用 Token 文件的 Agent 也须在运行 Wrangler 的子进程环境中设置 `CLOUDFLARE_API_TOKEN`，向 `secret put` 的标准输入传入选定统计 Token；`--token-file` 可用于初始化和有效期激活脚本，不会替 Wrangler 保存登录状态。单 Token 方案使运行时 Secret 也拥有部署写权限；下方说明如何改用独立只读统计 Token。
 
 分步核查与独立统计 Token 的操作如下：
 
@@ -117,7 +119,7 @@ npx wrangler d1 migrations list DB --remote --config wrangler.cloud.json
 npx wrangler d1 migrations apply DB --remote --config wrangler.cloud.json
 ```
 
-根目录迁移按 `migrations/0001_resources.sql` 起的版本顺序执行，后续 `0002_*.sql` 等增量迁移由 Wrangler 的迁移记录去重。已经应用的文件不得改写；重复执行不应重建数据库或改变已有资源 ID、对象 key 和分享 URL。
+根目录迁移按 `0001_resources.sql`、`0002_files.sql`、`0003_expiration.sql` 顺序执行，由 Wrangler 的迁移记录去重。已经应用的文件不得改写；重复执行不应重建数据库或改变已有资源 ID、对象 key 和分享 URL。0003准备有效期列、索引与触发器，补充旧删除原因，不开始旧资源30天倒计时；独立激活必须在新 Worker 成功部署后完成。即使新安装没有旧资源，也应在开放业务前预览并激活，保存唯一T0。
 
 AE 查询使用 Worker Secret `ANALYTICS_API_TOKEN`。建议为新安装使用独立只读 Token；当前部署按用户明确要求复用既有部署 Token，只保存到 Worker Secret，不写入配置或日志。以下是新建只读 Token 的可选步骤。在 API Tokens → Create Custom Token 创建目标账户 **Account → Account Analytics → Read** 的最小权限 Token；限制账户范围，避免使用初始化／部署的写权限 Token。见 [AE SQL API 身份认证](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/)。先用下列只读查询核对权限（账户 ID 从本地配置读取，Secret 文件要求同样为 `0600`）：
 
@@ -144,31 +146,115 @@ Route 固定生成为 `{ "pattern": "<host>/*", "zone_name": "<zone>" }`，不�
 
 ## 5. 正式版本升级
 
-原型已经完全退役：专用 Worker、D1、R2 桶及对象、两个旧链接 Route 与本地代码均已删除，旧测试链接返回 404。复用的 Zero Trust 团队、Access 应用、正式 D1/KV/R2/AE 和优选 DNS 保留。后续升级及回滚仅适用于正式模型，不再提供切回原型的操作。
+原型已退役，升级和回滚只针对正式 Worker、域名与存储；不重建资源、不切回原型。本节区分准备 Schema、发布兼容代码和开始旧资源倒计时。已有服务首次启用有效期必须完成全套步骤；后续升级保留已存在的 T0，不重复初始化期限。
 
-升级前暂停业务写入及可能改变状态的 Cron，确保没有进行中的上传／恢复任务；记录配置、Git commit、当前 Worker version、D1 migration 列表和 R2 对象清单。用当前正式绑定导出 D1 SQL，输出保存在仓库外：
+### 5.1 发布准备与维护门禁
+
+先完成最终 `npm run check`，回读现有配置、Worker version、Route、Secret名称和Cron，核对D1/KV/R2绑定归属。记录旧资源数量、状态、容量、R2对象清单与摘要。配置、SQL备份、对象标识和发布记录保存在仓库外私有目录，目录0700、文件0600；不把Token或用户内容写入日志。
+
+本次采用短维护窗口：所有到达Worker的fetch返回503、`Retry-After: 60`和`Cache-Control: no-store`，scheduled不执行业务。它同时隔离公开读取、MCP、HTTP上传和新触发的恢复任务；仅关闭MCP客户端不能阻止仍有效的上传会话。Access保持原样，未认证的受保护请求可能先返回401，不能为维护状态设置认证旁路。
+
+在仓库外准备两个临时入口和三份私有Wrangler配置，不作为产品持久开关提交。三份配置保持相同name/account/Route/bindings/vars/Cron，仅main不同；把main、migrations_dir解析成绝对路径，并移除build命令，避免分阶段发布时重新构建。原生成配置不因此改写，也不要用init --apply覆盖手工发布配置。
+
+- `wrangler.production.json`：main指向最终 `build/index.js`。
+- `wrangler.maintenance-only.json`：main指向静态 `maintenance-only.mjs`。
+- `wrangler.compatible-maintenance.json`：main指向加载同一最终bundle的 `compatible-maintenance.mjs`。
+
+静态入口：
+
+```js
+export default {
+  fetch(request) {
+    return new Response(request.method === 'HEAD' ? null : 'Service temporarily unavailable.\n', {
+      status: 503,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '60' },
+    });
+  },
+  scheduled() {},
+};
+```
+
+兼容维护入口用真实构建路径替换下例路径，保留构建的其他命名导出。它验证并打包新Wasm，fetch和scheduled仍不进入业务：
+
+```js
+import Worker from '/absolute/path/to/cf-content-share/build/index.js';
+export * from '/absolute/path/to/cf-content-share/build/index.js';
+export default class extends Worker {
+  fetch(request) {
+    return new Response(request.method === 'HEAD' ? null : 'Service temporarily unavailable.\n', {
+      status: 503,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '60' },
+    });
+  }
+  scheduled() {}
+}
+```
+
+先用本地workerd验证两种入口的GET/HEAD/POST、响应头和scheduled，确认没有业务存储与外部请求。最终build停止变化后记录摘要，再分别dry-run；以下`/private/cf-content-share-release`是需替换的私有目录：
 
 ```sh
 umask 077
-npx wrangler d1 export DB --remote --config wrangler.cloud.json --output /private/backup-before-upgrade.sql
-npx wrangler deployments list --config wrangler.cloud.json
-npx wrangler d1 migrations list DB --remote --config wrangler.cloud.json
-npm run init:cloud -- --config deployment.local.json
-npm run check
-npx wrangler deploy --dry-run --config wrangler.cloud.json
-npx wrangler d1 migrations apply DB --remote --config wrangler.cloud.json
-npx wrangler deploy --config wrangler.cloud.json
+release_dir=/private/cf-content-share-release
+sha256sum build/index.js build/index_bg.wasm > "$release_dir/bundle.sha256"
+npx wrangler deploy --dry-run --config "$release_dir/wrangler.maintenance-only.json"
+npx wrangler deploy --dry-run --config "$release_dir/wrangler.compatible-maintenance.json"
+npx wrangler deploy --dry-run --config "$release_dir/wrangler.production.json"
+npx wrangler deploy --config "$release_dir/wrangler.maintenance-only.json"
 ```
 
-复用同一 Worker、域名、资源 ID 和对象 key；部署后验证升级前 URL 仍能重定向／下载且摘要不变、`resource.get` / 列表和统计可用、Cron 正常，再恢复写入。迁移优先使用兼容旧代码的加法变更；移除列或改变语义需要单独迁移设计和恢复演练。
+回读维护版本为100%流量，并验证公开入口503。部署不能终止已经开始的旧请求；等待在途上传／恢复耗尽，复查活动lease、操作和容量。Cron表达式可以继续保留五分钟，维护scheduled不做事；如果另行删除Cron，不得把API空数组等同于即时停止，配置传播可能需要最多15分钟。[Cron传播规则](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
 
-代码回滚使用 `npx wrangler rollback <已记录的旧版本ID> --config wrangler.cloud.json`，前提是旧代码兼容当前 schema。**代码回滚不会回滚 D1 数据或 R2 对象。** 如需数据恢复，继续停写；在独立恢复数据库及配置上用 `wrangler d1 execute DB --remote --file /private/backup-before-upgrade.sql --config <恢复配置>` 演练导入，核对数量、资源 ID、对象 key、迁移记录和对象摘要后，再制定有审阅记录的恢复切换。不要把全量 SQL 直接导入正在使用的非空生产库，也不要靠删库／重建来撤销迁移。D1 还提供 [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)；应先核对可恢复时点及窗口，回滚期间所有数据变更都会受影响。SQL 和 Time Travel 都不备份 R2，恢复前必须核对对象仍存在。
+### 5.2 先备份，再准备 Schema
+
+在维护隔离及旧执行核对后，先取得D1 SQL、Time Travel bookmark、迁移记录和R2对象证据，确认备份成功再迁移：
+
+```sh
+npx wrangler deployments list --config "$release_dir/wrangler.production.json"
+npx wrangler d1 migrations list DB --remote --config "$release_dir/wrangler.production.json"
+npx wrangler d1 time-travel info DB --config "$release_dir/wrangler.production.json"
+npx wrangler d1 export DB --remote --config "$release_dir/wrangler.production.json" --output "$release_dir/backup-before-upgrade.sql"
+sha256sum "$release_dir/backup-before-upgrade.sql" > "$release_dir/backup-before-upgrade.sha256"
+npx wrangler d1 migrations apply DB --remote --config "$release_dir/wrangler.production.json"
+node scripts/activate-expiration.mjs --config "$release_dir/wrangler.production.json"
+```
+
+首次预览应为`activated=false`；0003不写激活记录，也不为旧未删除行提前赋到期时间。若已经激活，核对原T0，不删除记录重新计时。D1导出可能暂时阻断数据库查询，因此在维护窗口执行。[导出API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/)
+
+### 5.3 兼容发布后显式激活
+
+先发布加载新bundle的兼容维护版本，回读新version与503状态，成功后才执行激活：
+
+```sh
+sha256sum -c "$release_dir/bundle.sha256"
+npx wrangler deploy --config "$release_dir/wrangler.compatible-maintenance.json"
+node scripts/activate-expiration.mjs --config "$release_dir/wrangler.production.json" --apply
+node scripts/activate-expiration.mjs --config "$release_dir/wrangler.production.json"
+```
+
+`activate-expiration.mjs`要求显式`--config`，可选`--env NAME`和`--token-file /private/token`；不带`--apply`只读。应用时单条`INSERT OR IGNORE INTO expiration_activation(id) VALUES(1)`由D1生成UTC Unix秒T0，插入触发器在同一语句内固定迁移数量并设置旧未删除资源`T0 + 2592000`，包含pending。新资源策略有显式版本；旧漏字段插入即使晚到也使用同一T0，旧pending后续发布不重设截止。
+
+保存返回的`activated_at`、`legacy_expires_at`、`migrated_count`及迁移前后资源核对结果。`migrated_count`是T0瞬间迁移数量，晚到旧插入应另行核对。脚本响应丢失时先只读预览；重复`--apply`保留原T0和用户后续修改，不能手工批量UPDATE重新计时或覆盖永久设置。
+
+确认激活完成后恢复同一bundle：
+
+```sh
+sha256sum -c "$release_dir/bundle.sha256"
+npx wrangler deploy --config "$release_dir/wrangler.production.json"
+```
+
+再回读version、绑定、Route和Cron，验证旧URL／对象摘要、MCP详情与列表、新默认／自定义／永久资源、上传、期限编辑和短期测试资源到点拒绝；观察真实scheduled事件及测试资源清理，不把Cron配置存在等同于已执行。没有证据证明本次步骤通过前，不更新发布完成状态。
+
+### 5.4 失败恢复与回滚边界
+
+恢复正式入口失败时保持兼容维护，修复后重新发布同一已核对bundle；不重设T0。**激活后不能直接回滚不认识有效期的旧Worker**：它即使能读加法Schema，也会失去服务端到期约束。回退版本必须保留期限、KV截止及删除语义；否则继续维护，另行审阅恢复方案。代码回滚使用`wrangler rollback <已记录的兼容版本ID>`，不能只凭Schema可读判断兼容。[Worker回滚限制](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)
+
+代码回滚不会恢复D1、KV或R2。数据恢复须保持停写，在独立恢复数据库及配置上演练SQL导入，核对资源ID、对象key、迁移记录、原T0与摘要，再制定切换方案。不要把全量SQL导入非空生产库，不删库／重建撤销迁移，也不能恢复到激活前后重新开始30天。D1 [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)恢复影响整个数据库，须先核对窗口；SQL与Time Travel均不备份R2，已删除正文没有独立副本就无法随D1恢复。
 
 ## 6. 验收和可观测性
 
 `npm run test:deployment` 使用内存 API 和临时目录验证计划无写入、首次创建、分页、重入、部分失败恢复、旧 ID 保护、私有桶校验、凭据脱敏和路径生成。它不证明真实账户权限、云端资源创建、Access 登录、Route 切换或 AE 数据可见性。`deploy --dry-run` 只证明配置可解析和构建包可生成，也不会发布。
 
-每次云端验收至少记录真实 MCP 工具调用、匿名旧／新分享访问、有效及无效上传 Token、文件下载摘要、删除与恢复任务、统计事件及默认时区、Cron 触发和告警状态。结合 Workers Logs/Metrics、D1/KV/R2/AE 用量观察失败和费用；日志不得包含 Token 或文件正文。
+每次云端验收至少记录真实 MCP 工具调用、匿名旧／新分享访问、有效及无效上传 Token、文件下载摘要、删除与恢复任务、统计事件及默认时区、Cron 触发和告警状态。本次有效期功能还需记录实际T0及迁移数量、重复激活不变、短期测试资源GET/HEAD/Range到点拒绝和定时清理；旧版验收记录不能替代这些结果。结合 Workers Logs/Metrics、D1/KV/R2/AE 用量观察失败和费用；日志不得包含 Token 或文件正文。
 
 当前生产 Zone 的 Free Website 请求体上限为 100 MB，包含 multipart 开销；Workers Paid 不提高该上限。原型云端 32 MiB、本地 workerd 160 MiB 是不同证据，后者不能证明当前域名能接收 160 MiB。容量配置省略也不会绕过平台限制。见 [Workers 请求限制](https://developers.cloudflare.com/workers/platform/limits/#request-and-response-limits)。
 

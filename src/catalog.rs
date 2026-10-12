@@ -37,6 +37,9 @@ fn identifier() -> Value {
 fn resource_id() -> Value {
     json!({"type":"string","minLength":12,"maxLength":12,"format":"resource-id"})
 }
+fn retention() -> Value {
+    json!({"type":["integer","null"],"minimum":1,"maximum":9007199254740991u64,"default":2592000})
+}
 fn tags() -> Value {
     json!({"type":"array","maxItems":32,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128}})
 }
@@ -127,7 +130,7 @@ pub fn definitions() -> Vec<Definition> {
             name: "resource.create_url",
             description: "幂等创建 12 位短链",
             schema: schema(
-                json!({"operation_id":identifier(),"target_url":{"type":"string","minLength":1,"maxLength":8192,"format":"http-url"},"title":string(512),"description":string(8192),"tags":tags()}),
+                json!({"operation_id":identifier(),"target_url":{"type":"string","minLength":1,"maxLength":8192,"format":"http-url"},"title":string(512),"description":string(8192),"tags":tags(),"retention_seconds":retention()}),
                 &["operation_id", "target_url"],
             ),
             result: "resource 与 operation；相同创建参数返回原资源的当前状态",
@@ -159,7 +162,7 @@ pub fn definitions() -> Vec<Definition> {
             name: "resource.update",
             description: "编辑目标 URL 或管理元数据",
             schema: schema(
-                json!({"resource_id":resource_id(),"target_url":{"type":"string","minLength":1,"maxLength":8192,"format":"http-url"},"title":string(512),"description":string(8192),"tags":tags()}),
+                json!({"resource_id":resource_id(),"target_url":{"type":"string","minLength":1,"maxLength":8192,"format":"http-url"},"title":string(512),"description":string(8192),"tags":tags(),"expires_at":{"type":["integer","null"],"minimum":1,"maximum":9007199254740991u64}}),
                 &["resource_id"],
             ),
             result: "resource 与持久化的 KV 同步 operation",
@@ -207,14 +210,22 @@ pub fn definitions() -> Vec<Definition> {
     ]
 }
 
-// Only the JSON Schema subset emitted above is accepted. Unknown fields and nulls fail closed.
+// Only the JSON Schema subset emitted above is accepted. Unknown fields and undeclared nulls fail closed.
 pub fn validate(schema: &Value, value: &Value) -> bool {
     if let Some(options) = schema["enum"].as_array()
         && !options.contains(value)
     {
         return false;
     }
+    if let Some(types) = schema["type"].as_array() {
+        return types.iter().any(|kind| {
+            let mut alternative = schema.clone();
+            alternative["type"] = kind.clone();
+            validate(&alternative, value)
+        });
+    }
     match schema["type"].as_str() {
+        Some("null") => value.is_null(),
         Some("object") => {
             let Some(values) = value.as_object() else {
                 return false;
@@ -273,7 +284,7 @@ pub fn validate(schema: &Value, value: &Value) -> bool {
 
 pub fn upload_schema() -> Value {
     schema(
-        json!({"operation_id":identifier(),"filename":{"type":"string","minLength":1,"maxLength":1024},"content_type":{"type":"string","minLength":1,"maxLength":255},"size_bytes":{"type":"integer","minimum":0,"maximum":9007199254740991u64},"sha256":{"type":"string","minLength":64,"maxLength":64},"title":string(512),"description":string(8192),"tags":tags()}),
+        json!({"operation_id":identifier(),"filename":{"type":"string","minLength":1,"maxLength":1024},"content_type":{"type":"string","minLength":1,"maxLength":255},"size_bytes":{"type":"integer","minimum":0,"maximum":9007199254740991u64},"sha256":{"type":"string","minLength":64,"maxLength":64},"title":string(512),"description":string(8192),"tags":tags(),"retention_seconds":retention()}),
         &[
             "operation_id",
             "filename",

@@ -20,6 +20,7 @@ pub fn failure(code: &str, step: &str, retryable: bool) -> Value {
         "UNKNOWN_OPERATION" => "操作未实现；请先调用 describe 查询当前目录。",
         "NOT_FOUND" => "未找到指定资源或操作。",
         "IDEMPOTENCY_CONFLICT" => "该操作标识已用于不同的创建参数。",
+        "RESOURCE_EXPIRED" => "资源已到期，不能编辑或恢复。",
         "RESOURCE_DELETED" => "资源已永久删除，不能编辑或恢复。",
         "INVALID_CURSOR" => "游标无效或与当前列表及筛选条件不符。",
         "INVALID_TIME_RANGE" => "起始时刻必须早于结束时刻。",
@@ -67,10 +68,40 @@ pub struct Resource {
     pub size_bytes: Option<u64>,
     pub sha256: Option<String>,
     pub accounting: String,
+    pub retention_seconds: Option<i64>,
+    pub published_at: Option<i64>,
+    pub expires_at: Option<i64>,
+    pub deleted_reason: Option<String>,
+    pub expiration_policy_version: i64,
 }
 impl Resource {
+    pub fn expired(&self) -> bool {
+        self.expires_at.is_some_and(|time| time <= now())
+    }
+    pub fn unavailable_reason(&self) -> Option<&str> {
+        if self.state == "deleted" {
+            Some(if self.deleted_reason.as_deref() == Some("expired") {
+                "expired"
+            } else {
+                "deleted"
+            })
+        } else if self.expired() {
+            Some("expired")
+        } else if self.state != "published" {
+            Some("pending")
+        } else {
+            None
+        }
+    }
     pub fn output(&self, env: &Env) -> Result<Value> {
         let mut value = serde_json::to_value(self)?;
+        let unavailable_reason = self.unavailable_reason();
+        value["accessible"] = json!(unavailable_reason.is_none());
+        value["unavailable_reason"] = json!(unavailable_reason);
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("expiration_policy_version");
         value["tags"] = serde_json::from_str(&self.tags)?;
         value["share_url"] = json!(format!("{}/r/{}", env.var("PUBLIC_ORIGIN")?, self.id));
         Ok(value)
@@ -91,6 +122,7 @@ pub struct Operation {
     pub r#type: String,
     pub resource_id: String,
     pub fingerprint: String,
+    pub fingerprint_version: i64,
     pub status: String,
     pub kv_status: String,
     pub error_code: Option<String>,
@@ -195,4 +227,23 @@ pub fn object_key(id: &str, attempt_token: &str) -> String {
         "objects/{id}/{}",
         hex::encode(Sha256::digest(attempt_token.as_bytes()))
     )
+}
+
+// Keep the pre-expiration canonical payload available only for version-zero operations.
+pub fn creation_fingerprints(metadata: &mut Value) -> (String, Option<String>) {
+    let legacy = if metadata.get("retention_seconds").is_none() {
+        Some(fingerprint(metadata))
+    } else {
+        None
+    };
+    if metadata.get("retention_seconds").is_none() {
+        metadata["retention_seconds"] = json!(2592000);
+    }
+    (fingerprint(metadata), legacy)
+}
+pub fn valid_retention(metadata: &Value) -> bool {
+    metadata["retention_seconds"].is_null()
+        || metadata["retention_seconds"]
+            .as_i64()
+            .is_some_and(|seconds| seconds > 0 && seconds <= 9_007_199_254_740_991 - now())
 }

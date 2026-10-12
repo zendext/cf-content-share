@@ -69,7 +69,33 @@ export default class extends Worker {
       if(key==='delete')return async(...args)=>{const response=await env.FAULTS.fetch('https://faults.test/r2-delete',{method:'POST',body:JSON.stringify({key:args[0]})});if(!response.ok)throw new Error('injected delete failure');return target.delete(...args);};
       const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;
     }});
-    const wrapped={...env,MAPPINGS:mappings,FILES:files};
+    const statements = new WeakMap();
+    const signal = async (phase, sql, bindings = []) => {
+      const response = await env.FAULTS.fetch('https://faults.test/d1-' + phase, {method:'POST',body:JSON.stringify({sql,bindings})});
+      if (!response.ok) throw new Error('injected D1 failure');
+      offset = (await response.json()).offset;
+    };
+    const wrap = (statement, sql, bindings = []) => {
+      const wrapped = new Proxy(statement, {get(target,key) {
+        if(key==='constructor')return target.constructor;
+        if(key==='bind')return (...args)=>wrap(target.bind(...args),sql,args);
+        if(['first','all','run','raw'].includes(key))return async(...args)=>{
+          await signal('before',sql,bindings);const result=await target[key](...args);await signal('after',sql,bindings);return result;
+        };
+        const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;
+      }});
+      statements.set(wrapped,{statement,sql});return wrapped;
+    };
+    const database = new Proxy(env.DB,{get(target,key){
+      if(key==='constructor')return target.constructor;
+      if(key==='prepare')return sql=>wrap(target.prepare(sql),sql);
+      if(key==='batch')return async entries=>{
+        await signal('batch',entries.map(entry=>statements.get(entry).sql).join(';'));
+        return target.batch(entries.map(entry=>statements.get(entry).statement));
+      };
+      const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;
+    }});
+    const wrapped={...env,DB:database,MAPPINGS:mappings,FILES:files};
     super(ctx, wrapped);
     this.testEnv=wrapped;
     faults=env.FAULTS;

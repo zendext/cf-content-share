@@ -16,7 +16,7 @@ DAG：基线 → 三项并行实现与各自 review → 文件先集成 → 统�
 
 ## 固定契约
 
-- Rust/Wasm、单 Worker、D1 权威数据、KV 60 秒绝对新鲜度、私有 R2、Cache API、AE、5 分钟 Cron；不得新增 DO、Queues、自有 OAuth 或访问日志库。
+- 当时基线使用 Rust/Wasm、单 Worker、D1 权威数据、KV 60 秒绝对新鲜度、私有 R2、Cache API、AE、5 分钟 Cron；不得新增 DO、Queues、自有 OAuth 或访问日志库。2026-10-12 有效期功能将 KV 改为24小时绝对截止，当前契约见[技术设计](../design/technical.md#71-公开映射删除标记与-24-小时兜底)。
 - 仅两个 MCP 工具；正式目录最终涵盖技术设计中的 14 项操作。
 - bindings：DB、MAPPINGS、FILES、ANALYTICS；变量 ANALYTICS_DATASET、CLOUDFLARE_ACCOUNT_ID、DEFAULT_TIMEZONE（Asia/Shanghai）；Secret ANALYTICS_API_TOKEN。
 - 公开读取返回 response 与实际服务的 kind（PublicRead），由统一响应出口按 GET+302/200/206 采集。不能事后重查 D1 决定已返回内容的类别。

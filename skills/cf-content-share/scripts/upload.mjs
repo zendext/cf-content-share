@@ -41,10 +41,12 @@ function validMetadata(metadata) {
     typeof metadata.filename === 'string' && metadata.filename.length > 0 && !/[\x00-\x1f\x7f]/.test(metadata.filename) &&
     typeof metadata.content_type === 'string' && /^[\w!#$%&'*+.^`|~-]+\/[\w!#$%&'*+.^`|~-]+$/.test(metadata.content_type) &&
     Number.isSafeInteger(metadata.size_bytes) && metadata.size_bytes >= 0 && /^[a-f0-9]{64}$/.test(metadata.sha256) &&
+    (metadata.retention_seconds === undefined || metadata.retention_seconds === null ||
+      (Number.isSafeInteger(metadata.retention_seconds) && metadata.retention_seconds > 0)) &&
     Buffer.byteLength(JSON.stringify(metadata)) <= 16384;
 }
 
-export async function prepareUpload({file,origin,stateFile,contentType,filename,title,description,tags}) {
+export async function prepareUpload({file,origin,stateFile,contentType,filename,title,description,tags,retentionSeconds}) {
   origin = normalizeOrigin(origin);
   if (!file || !stateFile) fail('INVALID_ARGUMENTS');
   const source = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -52,8 +54,8 @@ export async function prepareUpload({file,origin,stateFile,contentType,filename,
   try {
     metadata = {operation_id:randomUUID(),filename:filename ?? path.basename(file),content_type:contentType,...await inspectFile(source)};
   } finally { await source.close(); }
-  for (const [key,value] of Object.entries({title,description,tags})) if (value !== undefined) metadata[key] = value;
-  if (!validMetadata(metadata)) fail('INVALID_METADATA');
+  for (const [key,value] of Object.entries({title,description,tags,retention_seconds:retentionSeconds})) if (value !== undefined) metadata[key] = value;
+  if (!validMetadata(metadata) || (retentionSeconds!=null && !Number.isSafeInteger(Math.floor(Date.now()/1000)+retentionSeconds))) fail('INVALID_METADATA');
   let output;
   try { output = await open(stateFile,'wx',0o600); }
   catch(error) { if(error.code==='EEXIST') fail('STATE_EXISTS'); throw error; }
@@ -113,11 +115,28 @@ export async function sendUpload({stateFile,sessionFile}, fetch = globalThis.fet
     if (typeof data?.resource?.id === 'string' && /^[A-Za-z0-9]{12}$/.test(data.resource.id)) {
       result.resource_id = data.resource.id;
       if (['published','pending','deleted'].includes(data.resource.state)) result.resource_state=data.resource.state;
+      for(const key of ['expires_at','published_at']) if(Object.hasOwn(data.resource,key)) {
+        const value=data.resource[key];
+        if(value!==null && (!Number.isSafeInteger(value) || value<0)) return {exitCode:2,result};
+        result[key]=value;
+      }
+      if(Object.hasOwn(data.resource,'accessible')) {
+        if(typeof data.resource.accessible!=='boolean') return {exitCode:2,result};
+        result.accessible=data.resource.accessible;
+      }
+      if(Object.hasOwn(data.resource,'unavailable_reason')) {
+        if(![null,'pending','expired','deleted'].includes(data.resource.unavailable_reason)) return {exitCode:2,result};
+        result.unavailable_reason=data.resource.unavailable_reason;
+      }
     }
+    if(result.unavailable_reason==='expired' || (result.resource_state!=='deleted' && result.unavailable_reason!=='deleted' && Number.isSafeInteger(result.expires_at) && result.expires_at<=Math.floor(Date.now()/1000))) {
+      return {exitCode:1,result:{...result,outcome:'expired',accessible:false,unavailable_reason:'expired'}};
+    }
+    if (result.resource_state==='deleted' || result.unavailable_reason==='deleted') return {exitCode:1,result:{...result,outcome:'deleted'}};
+    if(result.accessible===false || result.unavailable_reason==='pending') return {exitCode:2,result:{...result,outcome:'pending'}};
     if ((response.status===200 || response.status===201) && result.resource_state==='published') {
       return {exitCode:0,result:{...result,outcome:'published',url:state.origin+'/r/'+result.resource_id}};
     }
-    if (result.resource_state==='deleted') return {exitCode:1,result:{...result,outcome:'deleted'}};
     if (response.status===202 || response.status===409 || response.status===422) return {exitCode:2,result:{...result,outcome:'pending'}};
     if (response.status>=400 && response.status<500) return {exitCode:1,result:{...result,outcome:'rejected'}};
     return {exitCode:2,result};
@@ -127,24 +146,29 @@ export async function sendUpload({stateFile,sessionFile}, fetch = globalThis.fet
 const help = `Node.js 22+; no npm install required.
 prepare --file PATH --origin HTTPS_ORIGIN --state-file NEW_JSON --content-type MIME
         [--filename NAME] [--title TEXT] [--description TEXT] [--tag TAG ...]
+        [--retention-seconds INTEGER | --permanent]
 send    --state-file JSON --session-file PRIVATE_JSON
 
 prepare saves a new operation_id and file digest; it never overwrites a state file.
+Retention defaults to 30 days after first publication; --permanent saves null.
 send reads the session.create structured result, rechecks the file, and sends once.
 HTTPS required except loopback HTTP for local development. No redirects or automatic retries.
-Exit 0: published/prepared; 1: invalid input/rejected/deleted; 2: query operation.get.
+Exit 0: published/prepared; 1: invalid input/rejected/deleted/expired; 2: query operation.get.
 Reuse the same state after checking MCP recovery status. Never pass a Token as an argument.
 `;
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const {values,positionals}=parseArgs({allowPositionals:true,strict:true,options:{help:{type:'boolean'},file:{type:'string'},origin:{type:'string'},'state-file':{type:'string'},'session-file':{type:'string'},'content-type':{type:'string'},filename:{type:'string'},title:{type:'string'},description:{type:'string'},tag:{type:'string',multiple:true}}});
+    const {values,positionals}=parseArgs({allowPositionals:true,strict:true,options:{help:{type:'boolean'},file:{type:'string'},origin:{type:'string'},'state-file':{type:'string'},'session-file':{type:'string'},'content-type':{type:'string'},filename:{type:'string'},title:{type:'string'},description:{type:'string'},tag:{type:'string',multiple:true},'retention-seconds':{type:'string'},permanent:{type:'boolean'}}});
     if(values.help) console.log(help);
     else {
       const command=positionals[0];
-      const allowed=command==='prepare'?['file','origin','state-file','content-type','filename','title','description','tag']:['state-file','session-file'];
+      const allowed=command==='prepare'?['file','origin','state-file','content-type','filename','title','description','tag','retention-seconds','permanent']:['state-file','session-file'];
       if(positionals.length!==1 || !['prepare','send'].includes(command) || Object.keys(values).some(key=>!allowed.includes(key)) || !values['state-file']) fail('INVALID_ARGUMENTS');
       if(command==='prepare') {
-        const result=await prepareUpload({file:values.file,origin:values.origin,stateFile:values['state-file'],contentType:values['content-type'],filename:values.filename,title:values.title,description:values.description,tags:values.tag});
+        const retention=values['retention-seconds'];
+        if(retention!==undefined && (values.permanent || !/^[0-9]+$/.test(retention))) fail('INVALID_ARGUMENTS');
+        const retentionSeconds=values.permanent?null:retention===undefined?undefined:Number(retention);
+        const result=await prepareUpload({file:values.file,origin:values.origin,stateFile:values['state-file'],contentType:values['content-type'],filename:values.filename,title:values.title,description:values.description,tags:values.tag,retentionSeconds});
         console.log(JSON.stringify(result));
       } else {
         if(!values['session-file']) fail('INVALID_ARGUMENTS');

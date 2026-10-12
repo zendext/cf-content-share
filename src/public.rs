@@ -2,9 +2,12 @@ use crate::{error, store};
 use serde::{Deserialize, Serialize};
 use worker::*;
 
-pub const FRESHNESS_SECONDS: i64 = 60;
+pub const FRESHNESS_SECONDS: i64 = 86400;
 #[derive(Deserialize, Serialize)]
 pub struct Mapping {
+    version: u8,
+    #[serde(deserialize_with = "Option::deserialize")]
+    expires_at: Option<i64>,
     id: String,
     kind: String,
     state: String,
@@ -22,38 +25,74 @@ pub struct Mapping {
 }
 
 pub async fn snapshot(env: &Env, id: &str) -> Result<Option<Mapping>> {
-    // Capture before reading D1: a delayed read/write must not renew an old snapshot.
-    let observed_at = store::now();
-    Ok(store::resource(env, id).await?.map(|resource| Mapping {
-        id: resource.id,
-        kind: resource.kind,
-        state: resource.state,
-        target_url: resource.target_url,
-        file_key: resource.file_key,
-        filename: resource.filename,
-        content_type: resource.content_type,
-        size_bytes: resource.size_bytes,
-        observed_at,
-        valid_until: observed_at + FRESHNESS_SECONDS,
-    }))
+    // A read begun before expiration may race a legal renewal. Confirm again
+    // before creating an irreversible expiration marker from that snapshot.
+    for _ in 0..2 {
+        let observed_at = store::now();
+        let Some(resource) = store::resource(env, id).await? else {
+            return Ok(None);
+        };
+        if resource.state != "deleted"
+            && resource.expired()
+            && resource.expires_at.is_some_and(|time| observed_at < time)
+        {
+            continue;
+        }
+        return Ok(Some(Mapping {
+            version: 1,
+            expires_at: resource.expires_at,
+            state: if resource.state != "deleted" && resource.expired() {
+                "expired".into()
+            } else {
+                resource.state
+            },
+            id: resource.id,
+            kind: resource.kind,
+            target_url: resource.target_url,
+            file_key: resource.file_key,
+            filename: resource.filename,
+            content_type: resource.content_type,
+            size_bytes: resource.size_bytes,
+            observed_at,
+            valid_until: observed_at + FRESHNESS_SECONDS,
+        }));
+    }
+    Err(Error::RustError("expiration confirmation raced".into()))
 }
 pub async fn write(env: &Env, mapping: &Mapping) -> Result<()> {
+    let now = store::now();
+    if mapping.valid_until - now < 60
+        || !mapping.valid(&mapping.id)
+        || (mapping.state == "published" && mapping.expired())
+    {
+        return Ok(());
+    }
     env.kv("MAPPINGS")?
         .put(&mapping.id, serde_json::to_string(mapping)?)?
-        .expiration_ttl(120)
+        .expiration(mapping.valid_until as u64)
         .execute()
         .await?;
     Ok(())
 }
 impl Mapping {
+    fn expired(&self) -> bool {
+        self.expires_at.is_some_and(|time| time <= store::now())
+    }
     fn valid(&self, id: &str) -> bool {
         let now = store::now();
-        self.id == id
+        self.version == 1
+            && self
+                .expires_at
+                .is_none_or(|time| time > 0 && time <= 9_007_199_254_740_991)
+            && self.id == id
             && matches!(self.kind.as_str(), "url" | "image" | "file")
-            && matches!(self.state.as_str(), "published" | "deleted")
+            && matches!(self.state.as_str(), "published" | "deleted" | "expired")
+            && (self.state != "expired"
+                || self.expires_at.is_some_and(|time| time <= self.observed_at))
+            && self.observed_at >= 0
             && self.observed_at <= now
             && self.valid_until > now
-            && self.valid_until - self.observed_at == FRESHNESS_SECONDS
+            && self.observed_at.checked_add(FRESHNESS_SECONDS) == Some(self.valid_until)
             && (self.state != "published"
                 || (self.kind != "url"
                     && self
@@ -93,7 +132,9 @@ pub async fn read(req: &Request, id: &str, env: &Env, ctx: &Context) -> Result<P
             .await
             .ok()
             .flatten()
-            .filter(|mapping| mapping.valid(id)),
+            .filter(|mapping| {
+                mapping.valid(id) && !(mapping.state == "published" && mapping.expired())
+            }),
         Err(_) => None,
     };
     let mapping = match cached {
@@ -107,15 +148,15 @@ pub async fn read(req: &Request, id: &str, env: &Env, ctx: &Context) -> Result<P
             Err(_) => return rejected("SERVICE_UNAVAILABLE", 503),
         },
     };
-    if mapping.state != "published" {
+    if mapping.state != "published" || mapping.expired() {
         return rejected("NOT_FOUND", 404);
     }
     let response = if mapping.kind == "url" {
-        let Some(url) = mapping.target_url else {
+        let Some(url) = mapping.target_url.as_ref() else {
             return rejected("SERVICE_UNAVAILABLE", 503);
         };
         let mut response = Response::empty()?.with_status(302);
-        response.headers_mut().set("Location", &url)?;
+        response.headers_mut().set("Location", url)?;
         response.headers_mut().set("Cache-Control", "no-store")?;
         response
     } else {
@@ -124,6 +165,12 @@ pub async fn read(req: &Request, id: &str, env: &Env, ctx: &Context) -> Result<P
             Err(_) => return rejected("SERVICE_UNAVAILABLE", 503),
         }
     };
+    if mapping.expired() {
+        return rejected("NOT_FOUND", 404);
+    }
+    if mapping.valid_until <= store::now() {
+        return rejected("SERVICE_UNAVAILABLE", 503);
+    }
     let kind = if matches!(response.status_code(), 200 | 206 | 302) {
         Some(mapping.kind)
     } else {

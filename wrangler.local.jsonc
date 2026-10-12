@@ -1,0 +1,36 @@
+{
+  // Local development only. These identifiers do not refer to cloud resources.
+  "name": "cf-content-share-local",
+  "main": "build/index.js",
+  "compatibility_date": "2026-10-11",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [],
+  "build": { "command": "npm run build" },
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": {
+    "PUBLIC_ORIGIN": "http://localhost:8787",
+    "ACCESS_ISSUER": "https://replace-me.cloudflareaccess.com",
+    "ACCESS_AUD": "replace-with-access-application-audience",
+    "CLOUDFLARE_ACCOUNT_ID": "00000000000000000000000000000000",
+    "ANALYTICS_DATASET": "cf_content_share_local",
+    "DEFAULT_TIMEZONE": "Asia/Shanghai"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cf-content-share-local",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "ANALYTICS", "dataset": "cf_content_share_local" }
+  ],
+  "r2_buckets": [
+    { "binding": "FILES", "bucket_name": "cf-content-share-local" }
+  ],
+  "kv_namespaces": [
+    { "binding": "MAPPINGS", "id": "00000000000000000000000000000001" }
+  ]
+}

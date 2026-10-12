@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "types": ["@cloudflare/workers-types/experimental"]
+  },
+  "include": ["tests/*-fixture.mts", "tests/worker-runtime.d.ts"],
+  "exclude": []
+}

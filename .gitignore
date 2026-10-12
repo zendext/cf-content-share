@@ -1,0 +1,12 @@
+**/target/
+**/build/
+**/node_modules/
+**/.wrangler/
+**/.dev.vars*
+.env*
+
+# Local deployment inputs, resolved resource IDs and bootstrap lock/temp files.
+/deployment.local.json
+/wrangler.cloud.json
+/wrangler.cloud.json.lock
+/wrangler.cloud.json.*.tmp

@@ -25,7 +25,7 @@ chmod 600 deployment.local.json
 | `default_timezone` | 默认 `Asia/Shanghai`；使用 IANA 时区，不支持 `+08:00` 这类偏移表达 |
 | `max_file_bytes` / `total_storage_bytes` | 可选非负十进制整数字符串，最大 `9007199254740991`；`"0"` 表示明确设为零；省略表示不设产品容量上限 |
 
-初始化身份需在目标账户拥有 D1、Workers KV Storage、Workers R2 Storage 的读取权限；`--apply` 创建资源还需相应编辑权限。部署另外需要 Workers Scripts 编辑、目标 Zone 的 Workers Routes 编辑及 Zone 读取；Analytics Engine 绑定权限按平台要求配置。CLI 不配置 DNS 或 Access，因此初始化身份无需这些写权限。账户资源列表操作可能要求账户级范围，不能用仅对象读写的 R2 S3 凭据代替 Cloudflare API Token。按 [Cloudflare API 权限表](https://developers.cloudflare.com/fundamentals/api/reference/permissions/) 核对当前名称和范围。
+首次安装的完整 Token 权限表和单 Token 命令见 [README](../README.md#1-创建-cloudflare-api-token)。初始化身份需在目标账户拥有 D1、Workers KV Storage、Workers R2 Storage 的读取权限；`--apply` 创建资源还需相应编辑权限。部署另外需要 Workers Scripts 编辑、目标 Zone 的 Workers Routes 编辑及 Zone 读取；Analytics Engine 通过 Worker binding 写入，SQL 查询需要 Account Analytics 读取。CLI 不配置 DNS 或 Access，因此此手动流程无需给 Token 添加这些写权限。账户资源列表操作使用目标账户范围，不能用仅对象读写的 R2 S3 凭据代替 Cloudflare API Token。
 
 凭据从 `CLOUDFLARE_API_TOKEN` 读取，或显式传 `--token-file /private/cloudflare-api-token`。文件必须是普通文件、权限 `0600`，内容仅为 Token；CLI 不打印其内容，不接受 `--token <value>`。Token 文件放在仓库外。Wrangler 自身使用 `CLOUDFLARE_API_TOKEN` 或 `wrangler login` 的身份；CLI 的 `--token-file` 不会替 Wrangler 保存登录状态。
 
@@ -144,6 +144,6 @@ CLI API 契约依据：[D1 数据库 API](https://developers.cloudflare.com/api/
 
 连接名称为 `cf-content-share`，URL 为 `https://share.example.com/mcp`。本机已用 `codex mcp logout cf-content-share-compat` 清除旧凭据、remove 删除旧定义，再以新名称 add 并完成 OAuth 登录；Desktop 重启 MCP 后已加载 `mcp__cf_content_share`。
 
-新安装可运行 `codex mcp add cf-content-share --url https://share.example.com/mcp`；OAuth 需要时使用 `codex mcp login cf-content-share`。CLI 与 Desktop 共用配置；更改后在 Desktop Settings → MCP servers 点击 Restart，再调用 describe 查看目录。[官方 MCP 配置说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
+新安装请换成自己的域名，例如 `codex mcp add cf-content-share --url https://share.example.com/mcp`；OAuth 需要时使用 `codex mcp login cf-content-share`。CLI 与 Desktop 共用配置；更改后在 Desktop Settings → MCP servers 点击 Restart，再调用 describe 查看目录。[官方 MCP 配置说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
 2026-10-11 退役后验证：云端 Worker/D1/R2/KV/Route 列表只保留正式资源，没有原型资源；两个旧链接均为 404。Desktop 新名称下 describe 返回 14 项 operation，invoke(storage.get) 返回全零容量，invoke(resource.list) 成功返回空列表。删除原型及更名测试夹具后完整检查 70 项通过、0 失败。正式服务业务代码及部署版本未改变。

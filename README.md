@@ -50,15 +50,16 @@ The agent combines the initialization script, Cloudflare APIs and Wrangler; this
 
 ## Install the agent Skill
 
-Copy the entire [`skills/cf-content-share`](skills/cf-content-share/SKILL.md) directory, including `scripts/`, into `~/.agents/skills/cf-content-share`. Inspect an existing installation before replacing it. The Skill needs Node.js 24.12+ and an authenticated MCP connection. Its [upload helper](skills/cf-content-share/scripts/upload.mts) has no runtime npm dependencies.
+Copy the entire [`skills/cf-content-share`](skills/cf-content-share/SKILL.md) directory, including `scripts/`, into `~/.agents/skills/cf-content-share`. Inspect an existing installation before replacing it. The Skill needs Python 3.12+ and an authenticated MCP connection; check interpreter capabilities as the Skill describes. Its [upload helper](skills/cf-content-share/scripts/upload.py) uses only the standard library, without npm, pip or a virtual environment.
 
 Example request: “Use $cf-content-share to share this PDF, title it ‘Meeting notes’, and keep it for seven days.” The agent discovers the current upload contract, saves the operation, uploads over HTTP, and checks the authoritative result through MCP. Installing the Skill does not upload anything. Update the Skill and helper together; compatible business-schema changes are discovered from the service.
 
 ## Local development
 
-`rust-toolchain.toml` pins Rust, the Wasm target, rustfmt, Clippy and rust-analyzer. Use Node.js 24.12+; CI uses Node.js 24.21.0.
+`rust-toolchain.toml` pins Rust, the Wasm target, rustfmt, Clippy and rust-analyzer. Use Node.js 24.12+ and Python 3.12+; CI uses Node.js 24.21.0 and Python 3.12.
 
 ```sh
+python -c "import sys, ssl, hashlib, http.client; assert sys.version_info >= (3, 12)"
 npm ci
 cargo install worker-build --version 0.8.7 --locked
 npm run db:migrate:local
@@ -75,7 +76,7 @@ npm run dev
 | `npm run check` | Lint, type checking, Wasm build and all tests |
 | `npm run dry-run` | Validate the local deployment bundle without publishing |
 
-Maintained scripts and fixtures use `.mts`, executed by Node's native type stripping. Generated JavaScript and dependencies are untracked; source-policy tests reject maintained JavaScript files. GitHub Actions runs the same checks and a local dry-run on pull requests and pushes to `main`. VS Code settings support Biome and rust-analyzer; other editors can use the same tools.
+Platform development scripts and fixtures use `.mts`, executed by Node's native type stripping. Generated JavaScript and dependencies are untracked; source-policy tests reject maintained JavaScript files. The standalone upload helper uses Python standard-library code; `npm run check:upload` compiles it and runs unittest. Upload-client CI runs on Linux x86_64/arm64, macOS arm64 and Windows x86_64. GitHub Actions runs the same checks and a local dry-run on pull requests and pushes to `main`. VS Code settings support Biome and rust-analyzer; other editors can use the same tools.
 
 ## Documentation
 

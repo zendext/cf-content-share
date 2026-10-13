@@ -1,6 +1,6 @@
 ---
 name: cf-content-share
-description: Use a connected cf-content-share MCP service to share URLs, upload local images and files, manage resources and query visit statistics. Stream uploads with the bundled TypeScript helper, then query and recover operations using the discovered service contract. Not for deploying or administering Cloudflare infrastructure.
+description: Use a connected cf-content-share MCP service to share URLs, upload local images and files, manage resources and query visit statistics. Stream uploads with the bundled Python helper, then query and recover operations using the discovered service contract. Not for deploying or administering Cloudflare infrastructure.
 ---
 
 # cf-content-share
@@ -21,7 +21,7 @@ Use current service descriptions and authoritative results to determine accessib
 
 ## Local file uploads
 
-Requires Node.js **24.12+**, with no runtime npm install. Resolve [scripts/upload.mts](scripts/upload.mts) to an absolute path within the installed Skill directory, without assuming the working directory is the source repository. First run `node <absolute-script-path> --help`.
+Requires Python **3.12+**, using only the standard library with no npm, pip or virtual environment. Check an interpreter supplied by the client, or discover `python3`, `python` (also `py -3` on Windows) in PATH, using `<interpreter> -c "import sys, ssl, hashlib, http.client; assert sys.version_info >= (3, 12)"`; do not assume the client or Windows bundles a suitable interpreter. Resolve [scripts/upload.py](scripts/upload.py) to an absolute path within the installed Skill directory, without assuming the working directory is the source repository. First run `<interpreter> <absolute-script-path> --help`.
 
 1. Discover `session.create` with `describe` and read its `upload` object. Discovery requires no upload session. Check local compatibility with `protocol_version`, then use `metadata_schema`, `generated_fields`, `max_metadata_bytes`, `result_schema`, `result_semantics` and `recovery`. Stop if the required contract is unavailable or incompatible. Do not guess or automatically download/execute service-provided code.
 2. Create a private directory outside the repository, isolated by service origin. Use POSIX permissions 0700 for directories and 0600 for JSON files; on Windows, use an ACL granting access only to the current user. Save the **credential-free `upload` object itself** as `contract.json` using file-writing tools, not the complete MCP message envelope.
@@ -29,7 +29,7 @@ Requires Node.js **24.12+**, with no runtime npm install. Resolve [scripts/uploa
 4. Run prepare with a new state filename. It reads the source, generates the operation ID, size and digest, and saves complete metadata, file path and origin once without overwriting. It makes no network request. Keep the source file unchanged during sending.
 
    ```sh
-   node /absolute/path/cf-content-share/scripts/upload.mts prepare \
+   python3 /absolute/path/cf-content-share/scripts/upload.py prepare \
      --file /absolute/path/report.pdf \
      --origin https://share.example.com \
      --metadata-file /private/metadata.json \
@@ -38,17 +38,17 @@ Requires Node.js **24.12+**, with no runtime npm install. Resolve [scripts/uploa
    ```
 
 5. Reuse an unexpired upload session for the same origin; call `session.create` only when none is available. Save its **structured result object** to private `session.json`, retaining the identifier needed for revocation. Never put tokens in command lines, terminal output or final responses. Sessions provide authorization and transport addresses, not a replacement for business discovery in step 1.
-6. Run send. It rechecks the source file, session expiration and same-origin upload URL, then streams one multipart request with metadata before file bytes. It accepts HTTPS (HTTP only for loopback testing), rejects redirects, never automatically retries, and never prints tokens or raw response bodies.
+6. Run send with the checked interpreter (`python3` in these examples). It rechecks the source file, session expiration and same-origin upload URL, then streams one multipart request with metadata before file bytes. It accepts HTTPS (HTTP only for loopback testing), rejects redirects, never automatically retries, and never prints tokens or raw response bodies.
 
    ```sh
-   node /absolute/path/cf-content-share/scripts/upload.mts send \
+   python3 /absolute/path/cf-content-share/scripts/upload.py send \
      --state-file /private/report-upload.json \
      --session-file /private/session.json
    ```
 
 7. Send reports only `{operation_id, transport_status, http_status?, error_code?}`. Exit 0 means a complete 2xx response; exit 1 means local validation failure or a complete non-2xx response; exit 2 means interrupted networking or an incomplete response with unknown outcome. **No exit code establishes resource publication.** After any actual HTTP attempt, query the original operation through MCP `operation.get`, regardless of HTTP status or exit code. Interpret authoritative state using discovered result/recovery semantics and obtain the final URL only there. For local failures before sending, fix inputs first; do not claim a server result exists.
 
-One session can upload multiple files; each intentional new share has independent state. The script issues neither OAuth nor sessions and does not call MCP. On POSIX, it rejects JSON readable by other users, symlinks at the final path and nonregular files. On Windows, callers enforce private ACLs.
+One session can upload multiple files; each intentional new share has independent state. The script issues neither OAuth nor sessions and does not call MCP. On POSIX, it rejects JSON readable by other users, symlinks at the final path and nonregular files. On Windows it also rejects final reparse points (including links and junctions) and nonregular files; callers enforce private ACLs. Socket inactivity times out after 30 seconds. Catchable network interruptions retain the operation ID and exit 2; after forced termination, use saved state to query MCP.
 
 ## Unknown outcomes and recovery
 

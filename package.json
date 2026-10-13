@@ -6,14 +6,15 @@
     "build": "worker-build --release",
     "test": "npm run build && node --test tests/*.test.mts",
     "dev": "wrangler dev --config wrangler.local.jsonc",
-    "check": "npm run lint && npm run check:types && npm test",
+    "check": "npm run lint && npm run check:types && npm run check:upload && npm test",
     "db:migrate:local": "wrangler d1 migrations apply DB --local --config wrangler.local.jsonc",
     "dry-run": "wrangler deploy --dry-run --config wrangler.local.jsonc",
     "init:cloud": "node scripts/init-cloud.mts",
     "test:deployment": "node --test tests/deployment.test.mts",
     "check:types": "tsc --noEmit && tsc --project tsconfig.workerd.json",
     "lint": "biome check . --error-on-warnings && cargo fmt --check && cargo clippy --target wasm32-unknown-unknown -- -D warnings",
-    "format": "biome check --write . && cargo fmt"
+    "format": "biome check --write . && cargo fmt",
+    "check:upload": "python -m py_compile skills/cf-content-share/scripts/upload.py tests/python/test_upload.py && python -m unittest discover -s tests/python -v"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

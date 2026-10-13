@@ -18,7 +18,7 @@ After every HTTP attempt, call `operation.get` for the authoritative current res
 
 ## Generic local uploader
 
-The [Skill](../../skills/cf-content-share/SKILL.md) guides contract discovery, user-intent mapping and result interpretation. [upload.mts](../../skills/cf-content-share/scripts/upload.mts) handles local files and HTTP only. It requires Node.js 24.12+ without runtime npm dependencies; development uses TypeScript and `@types/node` for strict checking without emitted output.
+The [Skill](../../skills/cf-content-share/SKILL.md) guides contract discovery, user-intent mapping and result interpretation. [upload.py](../../skills/cf-content-share/scripts/upload.py) handles local files and HTTP only. It requires Python 3.12+ and only the standard library, without npm, pip or a virtual environment. Check interpreter capabilities as the Skill describes; do not assume Windows bundles Python. Repository `npm run check:upload` compiles Python and runs unittest; TypeScript platform tooling retains strict checking without emitted output.
 
 `prepare --file --origin --metadata-file --contract-file --state-file` reads private JSON files. Metadata contains business parameters assembled from the current Schema; contract contains the discovered credential-free `upload` object. The script generates and protects `operation_id`, `size_bytes` and `sha256`, validates JSON/numeric safety, transport protocol and metadata byte limits, and saves v2 state once without overwriting. It has no built-in business field list, defaults or business-Schema interpreter. The server performs final business validation. Omitted fields, explicit `null`, arrays and nested objects are preserved.
 

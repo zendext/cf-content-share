@@ -18,6 +18,9 @@ jobs:
         with:
           node-version: '24.21.0'
           cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       - name: Install Rust toolchain
         run: rustup show
       - name: Install dependencies
@@ -28,3 +31,22 @@ jobs:
         run: npm run check
       - name: Validate local deployment bundle
         run: npm run dry-run
+  upload-client:
+    name: Upload client (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Record interpreter and actual runner architecture
+        run: python -c "import platform, sys; print(sys.version); print(platform.system(), platform.machine())"
+      - name: Compile standalone client and tests
+        run: python -m py_compile skills/cf-content-share/scripts/upload.py tests/python/test_upload.py
+      - name: Test CLI, real HTTP/TLS streaming and private files
+        run: python -m unittest discover -s tests/python -v

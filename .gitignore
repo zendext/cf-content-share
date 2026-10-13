@@ -10,3 +10,6 @@
 /wrangler.cloud.json
 /wrangler.cloud.json.lock
 /wrangler.cloud.json.*.tmp
+
+# Python compile checks and standalone client tests.
+**/__pycache__/

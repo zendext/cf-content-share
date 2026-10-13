@@ -18,7 +18,7 @@ D1 只保存 Token 的 SHA-256。应用 Token 仅能上传；OAuth 撤销不会�
 
 ## 通用本地上传器
 
-[Skill](../../skills/cf-content-share/SKILL.zh-CN.md) 负责引导 Agent 发现业务契约、按用户意图构造参数及解释权威结果；[upload.mts](../../skills/cf-content-share/scripts/upload.mts) 只负责本地文件与 HTTP 传输。运行要求为 Node.js 24.12+，无需运行时 npm 依赖；仓库开发使用 TypeScript 与 `@types/node` 执行严格无输出类型检查。
+[Skill](../../skills/cf-content-share/SKILL.zh-CN.md) 负责引导 Agent 发现业务契约、按用户意图构造参数及解释权威结果；[upload.py](../../skills/cf-content-share/scripts/upload.py) 只负责本地文件与 HTTP 传输。运行要求为 Python 3.12+，只用标准库，无需 npm、pip 或虚拟环境。先按 Skill 检查解释器能力；不假定 Windows 自带 Python。仓库的 `npm run check:upload` 执行 Python 编译检查与 unittest，TypeScript 平台工具仍执行严格无输出类型检查。
 
 `prepare --file --origin --metadata-file --contract-file --state-file` 读取私有 JSON：metadata 是 Agent 按当次 Schema 构造的业务参数，contract 是发现响应中的无凭据 `upload` 对象。脚本保护并生成 `operation_id`、`size_bytes`、`sha256`，检查 JSON／数值安全性、传输协议和元数据字节上限，一次性保存 v2 state，拒绝覆盖。它不内置业务字段列表、不补默认值、不解释业务 Schema；最终业务校验仍由服务端执行。省略、显式 `null`、数组和嵌套对象按原值保存。
 

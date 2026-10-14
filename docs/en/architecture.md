@@ -31,11 +31,11 @@ Each attempt has its own key and execution token. A heartbeat every 30 seconds m
 
 ## KV, expiration and caches
 
-Public reads check mapping state and deadlines before reading content, falling back to D1 for missing, legacy or invalid snapshots. A snapshot remains valid for at most 86400 seconds from `observed_at`, recorded before the original D1 read. KV uses the same absolute expiration; hits and delayed fills never extend it. Fills with less than 60 seconds left are skipped. When both KV and D1 are unavailable, return 503 instead of bypassing state checks to serve cached bytes.
+Public reads check mapping state and deadlines before reading content, falling back to D1 for missing or invalid snapshots. A snapshot remains valid for at most 86400 seconds from `observed_at`, recorded before the original D1 read. KV uses the same absolute expiration; hits and delayed fills never extend it. Fills with less than 60 seconds left are skipped. When both KV and D1 are unavailable, return 503 instead of bypassing state checks to serve cached bytes.
 
 At a known deadline, consult D1 for a possible extension; confirmed expiration returns 404 without waiting for Cron. Deletion and target changes are subject to KV propagation. Cache API stores only complete 200 responses for 86400 seconds; browsers receive `private, max-age=31536000, immutable`. Deleting a cache entry in one location does not clear every location, and browser copies cannot be recalled. Short links use `302` and `no-store`.
 
-New resources receive their deadline at first publication. Older resources use `T0 + 2592000`, where T0 is the one-time activation instant. Schema migration alone does not activate expiration. Repeated activation preserves T0 and subsequent manual edits. After activation, rollback must not use a Worker that ignores expiration. See [deployment and upgrades](deployment.md).
+Resources receive their deadline at first publication. Ordinary edits, visits and retries do not restart retention.
 
 ## Recovery and analytics
 

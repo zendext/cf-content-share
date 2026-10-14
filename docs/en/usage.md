@@ -45,7 +45,7 @@ Omitting `retention_seconds` on creation means 2592000 seconds (30 days) after f
 
 Before a published resource expires, set `expires_at` to an absolute future UTC Unix second, omit it to keep the deadline, or use `null` for permanent storage. Convert relative requests into an explicit saved deadline according to user intent; retries must not restart the clock. Ordinary edits and visits do not extend retention.
 
-Expired resources cannot be renewed or restored. Default lists hide expired and deleted resources, but ID lookup retains their state; `state=published` can coexist with `accessible=false`. See [deployment](deployment.md#enabling-expiration-on-an-older-installation) for one-time activation on an older installation.
+Expired resources cannot be renewed or restored. Default lists hide expired and deleted resources, but ID lookup retains their state; `state=published` can coexist with `accessible=false`.
 
 Deletion commits logical state before KV propagation and R2 cleanup, reporting each step separately. KV acceptance does not mean every location has updated; old mappings can still be served during propagation, bounded by their original snapshot deadline of at most 24 hours. Expiration and deletion checks precede content-cache access, but cannot recall browser copies.
 

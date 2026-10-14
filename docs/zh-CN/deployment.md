@@ -80,7 +80,7 @@ npm run init:cloud -- --config deployment.local.json --token-file /private/cloud
 
 ## 首次发布
 
-核对配置、绑定和域名后执行。以下示例在 Bash / Zsh 逐步输入，不开启 `set -x`；`read` 时粘贴 Token 不会进入命令历史。已有数据且首次启用有效期的安装须改走后面的维护流程。
+核对配置、绑定和域名后执行。以下示例在 Bash / Zsh 逐步输入，不开启 `set -x`；`read` 时粘贴 Token 不会进入命令历史。
 
 ```sh
 read -r -s CLOUDFLARE_API_TOKEN
@@ -91,122 +91,22 @@ npx wrangler d1 migrations list DB --remote --config wrangler.cloud.json
 npx wrangler d1 migrations apply DB --remote --config wrangler.cloud.json
 npx wrangler secret put ANALYTICS_API_TOKEN --config wrangler.cloud.json < /private/analytics-api-token
 npx wrangler deploy --config wrangler.cloud.json
-node scripts/activate-expiration.mts --config wrangler.cloud.json
-node scripts/activate-expiration.mts --config wrangler.cloud.json --apply
 unset CLOUDFLARE_API_TOKEN
 ```
 
 若明确使用同一 Token，Secret 命令可替换为 `printf '%s' "$CLOUDFLARE_API_TOKEN" | npx wrangler secret put ANALYTICS_API_TOKEN --config wrangler.cloud.json`。Agent 从私有文件读取 Token 后仅通过子进程环境和 stdin 传递，不打印它。
 
-迁移按 0001、0002、0003 顺序应用，由 Wrangler 记录去重，不改写已执行的迁移。0003 准备列、索引、触发器和旧删除原因，不启动旧资源倒计时。发布兼容 Worker 后才激活；新安装即使没有旧资源，也应在开放业务前保存唯一 T0。首次设置 Secret 若需建立占位 Worker，先核对名称。
+迁移按 0001、0002、0003 顺序应用，由 Wrangler 记录去重，不改写已执行的迁移。资源在首次发布时自动确定有效期。首次设置 Secret 若需建立占位 Worker，先核对名称。
 
 回读 Worker version、绑定、Route、Secret 名称与 Cron。连接 MCP 并完成真实浏览器 OAuth，再按[验证部署](#验证部署)验收，安装[分享 Skill](../../skills/cf-content-share/SKILL.zh-CN.md)。CLI 计划与 dry-run 都不代表真实部署或端到端成功。
 
 ## 常规升级
 
-检查最终代码并完成 `npm run check` 和正式配置 dry-run。核对迁移列表、现有绑定、Route、Secret 名称、Cron、容量和原资源；需要迁移时先评估兼容性并备份。无新迁移时只发布 Worker，不重复初始化资源或重设 T0。更新 Skill 时同步脚本。保留版本和验证记录在仓库外私有目录。
-
-## 旧安装首次启用有效期
-
-已有数据从不支持有效期的版本升级时，采用短维护窗口。目录 `0700`、备份文件 `0600`，以下 `release_dir` 为需要预先创建的仓库外私有目录。
-
-### 1. 维护与冻结构建
-
-完成检查后冻结最终 `build/index.js` 和 `build/index_bg.wasm`。准备三份私有 Wrangler 配置，保持相同 name/account/Route/bindings/vars/Cron，仅入口不同；main 与 migrations_dir 使用绝对路径，移除 build 命令，避免分阶段重建：
-
-- `wrangler.production.json` 指向最终构建。
-- `wrangler.maintenance-only.json` 指向静态维护入口。
-- `wrangler.compatible-maintenance.json` 指向加载最终构建但禁止业务的维护入口。
-
-静态维护入口：
-
-```ts
-export default {
-  fetch(request: Request) {
-    return new Response(request.method === 'HEAD' ? null : 'Service temporarily unavailable.\n', {
-      status: 503,
-      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '60' },
-    });
-  },
-  scheduled() {},
-};
-```
-
-兼容维护入口（替换真实构建路径）：
-
-```ts
-import Worker from '/absolute/path/to/cf-content-share/build/index.js';
-export * from '/absolute/path/to/cf-content-share/build/index.js';
-export default class extends Worker {
-  fetch(request: Request) {
-    return new Response(request.method === 'HEAD' ? null : 'Service temporarily unavailable.\n', {
-      status: 503,
-      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '60' },
-    });
-  }
-  scheduled() {}
-}
-```
-
-先用本地 workerd 验证两者的 GET/HEAD/POST、响应头及 scheduled，不触发业务或外部请求。Access 保持原样，未认证请求可能先收到 401，不增加认证旁路。
-
-```sh
-umask 077
-release_dir=/private/cf-content-share-release
-sha256sum build/index.js build/index_bg.wasm > "$release_dir/bundle.sha256"
-npx wrangler deploy --dry-run --config "$release_dir/wrangler.maintenance-only.json"
-npx wrangler deploy --dry-run --config "$release_dir/wrangler.compatible-maintenance.json"
-npx wrangler deploy --dry-run --config "$release_dir/wrangler.production.json"
-npx wrangler deploy --config "$release_dir/wrangler.maintenance-only.json"
-```
-
-确认维护版本承接 100% 流量并返回 503；发布不能终止旧请求，须等待在途上传／恢复耗尽并检查活动租约、操作与容量。仅关闭 MCP 客户端不能阻止上传；仅移除 Cron 配置也不能视为立即停用。维护入口的 scheduled 应保持不执行业务。
-
-### 2. 备份与 Schema
-
-先核对原资源状态、数量、容量、R2 对象清单与摘要，再备份 D1、迁移记录和恢复书签；D1 导出可能阻断查询，应在维护窗口执行。
-
-```sh
-npx wrangler deployments list --config "$release_dir/wrangler.production.json"
-npx wrangler d1 migrations list DB --remote --config "$release_dir/wrangler.production.json"
-npx wrangler d1 time-travel info DB --config "$release_dir/wrangler.production.json"
-npx wrangler d1 export DB --remote --config "$release_dir/wrangler.production.json" --output "$release_dir/backup-before-upgrade.sql"
-sha256sum "$release_dir/backup-before-upgrade.sql" > "$release_dir/backup-before-upgrade.sha256"
-npx wrangler d1 migrations apply DB --remote --config "$release_dir/wrangler.production.json"
-node scripts/activate-expiration.mts --config "$release_dir/wrangler.production.json"
-```
-
-首次预览应为 `activated=false`。若已激活，核对原 T0，不能删除记录重新计时。D1 备份不包含 R2 正文，需要恢复文件时必须另有对象备份。
-
-### 3. 兼容发布与激活
-
-```sh
-sha256sum -c "$release_dir/bundle.sha256"
-npx wrangler deploy --config "$release_dir/wrangler.compatible-maintenance.json"
-```
-
-确认新版本与维护状态后再激活：
-
-```sh
-node scripts/activate-expiration.mts --config "$release_dir/wrangler.production.json" --apply
-node scripts/activate-expiration.mts --config "$release_dir/wrangler.production.json"
-sha256sum -c "$release_dir/bundle.sha256"
-npx wrangler deploy --config "$release_dir/wrangler.production.json"
-```
-
-激活脚本要求 `--config`，支持 `--env NAME`、`--token-file`；无 `--apply` 只读。单条 `INSERT OR IGNORE` 由 D1 生成 T0，trigger 在同一语句内记录迁移数量并为旧未删除资源（含 pending）设置 `T0 + 2592000`。晚到的旧格式插入也沿用 T0，旧 pending 发布不重设截止。
-
-保存 `activated_at`、`legacy_expires_at`、`migrated_count` 并核对资源。响应丢失先只读查询；重复应用保留原 T0 与后续编辑。迁移数量只代表激活瞬间，晚到插入单独核对。禁止批量 UPDATE 重新计时或覆盖永久设置。恢复正式入口后验证旧链接、对象摘要、默认／自定义／永久资源、续期及自然到期清理。
-
-### 4. 失败恢复
-
-恢复失败时保持兼容维护，修复后发布同一已核对构建。激活后不能回滚不认识期限的 Worker；兼容回滚必须保留期限、KV 截止和删除规则。代码回滚不会恢复 D1/KV/R2，不要只凭 Schema 可读就认定兼容。
-
-数据恢复期间停写，在独立数据库与配置上演练，核对 ID、对象 key、迁移、原 T0 和摘要。不要把完整 SQL 导入非空生产库，或删库重建撤销迁移；不能通过恢复重启 30 天倒计时。Time Travel 影响整个数据库，不备份 R2；没有对象副本时无法恢复已删除正文。
+检查最终代码并完成 `npm run check` 和正式配置 dry-run。核对迁移列表、现有绑定、Route、Secret 名称、Cron、容量和原资源；需要迁移时先评估兼容性并备份。无新迁移时只发布 Worker，不重复初始化资源。更新 Skill 时同步脚本。保留版本和验证记录在仓库外私有目录。
 
 ## 验证部署
 
-至少验证实际 MCP 调用、本人登录与其他身份拒绝、OAuth 刷新／撤销、匿名分享、无效上传 Token 拒绝、文件下载摘要、删除与恢复、统计事件及时区、真实 Cron 执行。有效期激活还要验证原 T0 不变、短期资源 GET/HEAD/Range 到点拒绝与文件清理，清理测试资源并撤销本次测试会话。
+至少验证实际 MCP 调用、本人登录与其他身份拒绝、OAuth 刷新／撤销、匿名分享、无效上传 Token 拒绝、文件下载摘要、删除与恢复、统计事件及时区、真实 Cron 执行。验证默认、自定义和永久保存策略、短期资源 GET/HEAD/Range 到点拒绝与文件清理，清理测试资源并撤销本次测试会话。
 
 `npm run test:deployment` 使用模拟 API 验证初始化，不证明真实权限。`npm run check` 使用本地 workerd；正式配置 dry-run 只验证打包。跨节点传播、云端并发故障恢复及长期浏览器缓存需单独测试。Workers、R2 等平台请求与存储限制仍适用，省略容量配置不会绕过限制；按实际账户与 Zone 检查平台限制和费用。
 

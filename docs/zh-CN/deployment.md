@@ -42,7 +42,7 @@ Token 放在仓库外普通文件中，权限必须为 `0600`，通过 `--token-
 
 1. 复用现有 Zero Trust 团队，不重命名或重建。缺失时按使用者指定的团队名创建。
 2. 复用或添加 Cloudflare IdP，启用 **Restrict to account members**。准入邮箱必须属于账户，不自动放宽策略。
-3. 建立 Self-hosted Access 应用，只保护分享主机的 `mcp` 路径。唯一 Allow 策略用 **Emails** 指定本人完整邮箱，只选择上述 IdP。检查父级应用未拦截 `/r/*`、`/upload` 和 OAuth 发现路径；不使用 Everyone、宽泛邮箱域或 Bypass 代替个人认证。
+3. 建立 Self-hosted Access 应用，只保护分享主机的 `mcp` 路径。唯一 Allow 策略用 **Emails** 指定本人完整邮箱，只选择上述 IdP。检查父级应用未拦截 `/r/*` 和 OAuth 发现路径；不使用 Everyone、宽泛邮箱域或 Bypass 代替个人认证。
 4. 启用 **Managed OAuth**，按实际客户端需要允许 localhost、loopback 或明确的 HTTPS redirect URI。将 OAuth access token 期限设为 `15m`、grant session 期限设为 `336h`（14 天），验证静默刷新。grant 期限决定何时需要重新登录，不代表单份 access token 有效 14 天。复制团队 issuer 与 Application Audience (AUD)。
 5. 分享主机使用 proxied DNS 和 `<host>/*` Worker Route；专用无源站子域名可使用 AAAA `100::` 占位。现有不同目标、Route 或 Custom Domain 不直接覆盖。DNS 与 Access 需要通过控制台或 API 单独配置，初始化脚本不处理它们。
 
@@ -106,8 +106,10 @@ unset CLOUDFLARE_API_TOKEN
 
 ## 验证部署
 
-至少验证实际 MCP 调用、本人登录与其他身份拒绝、OAuth 刷新／撤销、匿名分享、无效上传 Token 拒绝、文件下载摘要、删除与恢复、统计事件及时区、真实 Cron 执行。验证默认、自定义和永久保存策略、短期资源 GET/HEAD/Range 到点拒绝与文件清理，清理测试资源并撤销本次测试会话。
+至少验证实际 MCP 调用、本人登录与其他身份拒绝、OAuth 刷新／撤销、匿名分享、无效上传 Token 拒绝、文件下载摘要、删除与恢复、统计事件及时区、真实 Cron 执行。验证默认、自定义和永久保存策略、短期资源 GET/HEAD/Range 到点拒绝与文件清理，清理测试资源并删除本地测试凭据。
 
 `npm run test:deployment` 使用模拟 API 验证初始化，不证明真实权限。`npm run check` 使用本地 workerd；正式配置 dry-run 只验证打包。跨节点传播、云端并发故障恢复及长期浏览器缓存需单独测试。Workers、R2 等平台请求与存储限制仍适用，省略容量配置不会绕过限制；按实际账户与 Zone 检查平台限制和费用。
 
 首次全新账户的 Agent 编排需要单独验收，不能把已有安装的验证当作全新账户验证。观察 Workers Logs/Metrics 及 D1/KV/R2/AE 用量，日志不含 Token 或文件正文。
+
+使用现有 MCP 登录完成真实上传验证后，先备份 D1，部署仅 OAuth 上传的 Worker，再应用 `0004_remove_upload_sessions.sql`。迁移只删除旧凭据表，保留资源、操作、执行租约和容量数据；回退旧 Worker 前须恢复该表。同步更新已安装的 Skill 和脚本，确认旧入口和会话操作不可用，再重复上传、查询操作、摘要核对和删除验证。

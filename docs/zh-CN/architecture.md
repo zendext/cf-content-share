@@ -9,18 +9,17 @@
 | 入口 | 认证与职责 |
 | --- | --- |
 | `/mcp` | Access Managed OAuth；Worker 验证 Access JWT，处理 `describe` / `invoke` |
-| `POST /mcp/upload` | 验证用的共享授权上传入口；同一 Access 应用和 JWT 校验 |
-| `POST /upload` | Worker 验证应用级 Bearer Token，流式写入 R2 |
+| `POST /mcp/upload` | 同一 Access 应用和 JWT 校验下的流式上传入口 |
 | `GET/HEAD /r/<id>` | 公开访问；检查资源状态后跳转或读取正文 |
 | scheduled | 恢复已登记操作，清理到期资源和文件 |
 
-Access 只保护 `/mcp`，不把整个域名置于登录墙后。JWT 校验包括签名、issuer、audience 和时间。上传 Token 仅用于上传，有效期固定 24 小时，D1 只保存摘要。OAuth 撤销不自动撤销已签发的上传会话。
+Access 保护 `/mcp` 及其子路径，公开分享仍可匿名访问。JWT 校验包括签名、issuer、audience 和时间。应用上传 token、会话接口及上传会话表均已移除。
 
-`/mcp/upload` 位于已有 Access 路径之下。`upload.authorization` 返回当前 MCP 请求中已验证的 Cloudflare Access JWT 及其实际 `exp`，不签发新 Token，不创建 D1 会话；脚本以 `Cf-Access-Token` 携带凭据，Access 向 Worker 传递断言后再次执行相同校验。这份凭据具有 MCP 管理权限，不限于上传。它不是 OAuth refresh token，其期限以返回值为准，不能假定与 OAuth access token 的期限相同。现有 `/upload` 和会话流程保留到真实客户端的交接验证完成；本地模拟 Access 请求头的测试不能证明线上交接成功。
+`/mcp/upload` 位于已有 Access 路径之下。`upload.authorization` 返回当前 MCP 请求中已验证的 Cloudflare Access JWT 及其实际 `exp`，不签发新 Token，不创建 D1 会话；脚本以 `Cf-Access-Token` 携带凭据，Access 向 Worker 传递断言后再次执行相同校验。这份凭据具有 MCP 管理权限，不限于上传。它不是 OAuth refresh token，其期限以返回值为准，不能假定与 OAuth access token 的期限相同。已经使用现有 MCP 登录验证线上交接。源站 JWT 实测有效期接近 14 天，与 15 分钟的 OAuth access token 不同；不能假定撤销 OAuth 会立即使已导出的 JWT 失效。
 
 ## 状态来源
 
-D1 是资源、会话、操作、执行租约及容量计数的权威来源；KV 是公开映射的派生副本；R2 保存私有正文。Analytics Engine 单独保存访问事件。D1、KV 和 R2 之间没有跨服务事务。
+D1 是资源、操作、执行租约及容量计数的权威来源；KV 是公开映射的派生副本；R2 保存私有正文。Analytics Engine 单独保存访问事件。D1、KV 和 R2 之间没有跨服务事务。
 
 [`src/store/`](../../src/store/) 集中承载 D1 SQL 和类型化数据访问；业务模块负责校验、状态转换和外部服务调用。SQL migration 是持久 Schema 的来源，MCP `describe` 是调用参数与结果契约的发现入口。
 

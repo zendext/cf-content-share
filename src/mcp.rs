@@ -1,4 +1,4 @@
-use crate::{auth, catalog, error, json_response, recovery, resources, sessions, stats, store};
+use crate::{auth, catalog, error, json_response, recovery, resources, stats, store};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -82,7 +82,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                 .as_str()
                 .filter(|version| SUPPORTED_VERSIONS.contains(version))
                 .unwrap_or(SUPPORTED_VERSIONS[0]);
-            json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"cf-content-share","version":"0.1.0"},"instructions":"先调用 describe，按目录调用 invoke；通过 session.create 发现 HTTP 上传协议；文件正文不放入 MCP JSON。"})
+            json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"cf-content-share","version":"0.1.0"},"instructions":"先调用 describe，按目录调用 invoke；通过 upload.authorization 发现 HTTP 上传协议；文件正文不放入 MCP JSON。"})
         }
         "ping" => json!({}),
         "tools/list" => json!({"tools":[
@@ -105,7 +105,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                     Ok(_) if explicitly_null => tool_error("INVALID_ARGUMENTS"),
                     Err(_) => tool_error("INVALID_ARGUMENTS"),
                     Ok(Describe { operation: None }) => tool_result(
-                        json!({"operations":catalog::definitions().iter().map(|op| json!({"name":op.name,"description":op.description})).collect::<Vec<_>>(),"defaults":{"resource_id_length":12,"list_limit":20,"list_max_limit":100,"mapping_freshness_seconds":crate::public::FRESHNESS_SECONDS,"time_format":"UTC Unix seconds","automatic_retry_limit":10,"upload_session_seconds":86400},"implementation":"url-and-file-resources, analytics, durable-recovery"}),
+                        json!({"operations":catalog::definitions().iter().map(|op| json!({"name":op.name,"description":op.description})).collect::<Vec<_>>(),"defaults":{"resource_id_length":12,"list_limit":20,"list_max_limit":100,"mapping_freshness_seconds":crate::public::FRESHNESS_SECONDS,"time_format":"UTC Unix seconds","automatic_retry_limit":10},"implementation":"url-and-file-resources, analytics, durable-recovery"}),
                         false,
                     ),
                     Ok(Describe {
@@ -117,13 +117,8 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                         Some(op) => {
                             let mut detail = json!({"name":op.name,"description":op.description,"inputSchema":op.schema,"result":op.result,"side_effects":op.side_effects,"example":op.example});
                             match op.operation {
-                                catalog::Action::CreateSession => {
-                                    detail["upload"] = catalog::upload_contract(
-                                        &env.var("PUBLIC_ORIGIN")?.to_string(),
-                                    )
-                                }
                                 catalog::Action::UploadAuthorization => {
-                                    detail["upload"] = catalog::oauth_upload_contract(
+                                    detail["upload"] = catalog::upload_contract(
                                         &env.var("PUBLIC_ORIGIN")?.to_string(),
                                     )
                                 }
@@ -179,13 +174,10 @@ async fn invoke(input: &Value, env: &Env, access: &auth::Access) -> Result<Value
     let result = match definition.operation {
         Action::StatsQuery => stats::query(env, a, false).await,
         Action::StatsSamples => stats::query(env, a, true).await,
-        Action::CreateSession => sessions::create(env, a).await,
-        Action::ListSessions => sessions::list(env, a).await,
-        Action::RevokeSession => sessions::revoke(env, a["session_id"].as_str().unwrap()).await,
         Action::UploadAuthorization => Ok(json!({
             "token":access.token,
             "expires_at":access.expires_at,
-            "upload":catalog::oauth_upload_contract(&env.var("PUBLIC_ORIGIN")?.to_string())
+            "upload":catalog::upload_contract(&env.var("PUBLIC_ORIGIN")?.to_string())
         })),
         Action::Storage => store::storage(env).await,
         Action::CreateUrl => resources::create(env, a).await,

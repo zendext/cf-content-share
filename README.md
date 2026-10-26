@@ -11,7 +11,7 @@ Resources expire 30 days after their first publication by default. Choose a cust
 | Service | Purpose |
 | --- | --- |
 | Workers (Rust / Wasm) | MCP, redirects, streamed uploads and downloads |
-| D1 | Resource metadata, sessions, operations and capacity accounting |
+| D1 | Resource metadata, operations and capacity accounting |
 | Workers KV | Public resource mappings |
 | R2 (private Standard bucket) | Image and file contents |
 | Analytics Engine | Visit events and queries over the last 30 days |
@@ -83,7 +83,7 @@ Platform development scripts and fixtures use `.mts`, executed by Node's native 
 - [Usage and MCP operations](docs/en/usage.md)
 - [Deployment and upgrades](docs/en/deployment.md)
 - [Architecture and consistency](docs/en/architecture.md)
-- [Files, upload sessions and recovery](docs/en/files.md)
+- [Files, OAuth uploads and recovery](docs/en/files.md)
 - [Analytics](docs/en/analytics.md)
 
 Every guide has a matching Chinese version. Chinese is the authoritative source; update both languages together.

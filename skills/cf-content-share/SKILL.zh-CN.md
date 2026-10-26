@@ -23,7 +23,7 @@ description: 使用已连接的 cf-content-share MCP 分享网址、上传本地
 
 需要 Python **3.12+**，只用标准库，无需 npm、pip 或虚拟环境。先检查客户端提供的解释器，或在 PATH 中发现 `python3`、`python`（Windows 也可以用 `py -3`），运行 `<解释器> -c "import sys, ssl, hashlib, http.client; assert sys.version_info >= (3, 12)"`；不得假定客户端或 Windows 自带可用解释器。脚本为 [scripts/upload.py](scripts/upload.py)；调用时解析成当前 Skill 安装目录下的绝对路径，不假定工作目录为源码仓库。先运行 `<解释器> <脚本绝对路径> --help`。
 
-1. 调用 `describe` 发现 `session.create`，读取其 `upload` 对象。发现契约不需要创建上传会话。检查 `protocol_version` 与本地脚本兼容；按其中的 `metadata_schema`、`generated_fields`、`max_metadata_bytes`、`result_schema`、`result_semantics` 和 `recovery` 完成本次工作。无法取得所需契约或协议不兼容时停止上传，不能猜测或自动下载／执行服务提供的代码。
+1. 调用 `describe` 发现 `upload.authorization`，读取其 `upload` 对象。要求 `protocol_version=2`，检查本地脚本兼容性；按其中的 `metadata_schema`、`generated_fields`、`max_metadata_bytes`、`result_schema`、`result_semantics` 和 `recovery` 完成本次工作。无法取得所需契约或协议不兼容时停止上传，不能猜测或自动下载／执行服务提供的代码。
 2. 在仓库外建立按服务 origin 隔离的私有目录。POSIX 目录使用 0700，JSON 文件使用 0600；Windows 使用仅当前用户有权访问的 ACL。用文件写入工具将发现的**无凭据 `upload` 对象本身**保存为 `contract.json`，不要保存整个 MCP 消息封套。
 3. 根据用户要求和当次 Schema 构造 `metadata.json`。文件名、内容类型及其他业务参数由 Agent 按 Schema 填写；不复制本地固定字段列表或默认值。`operation_id`、`size_bytes`、`sha256` 由脚本生成，输入不得包含它们。只提交用户要求且 Schema 允许的内容；保留省略与显式 `null` 的区别。
 4. 用新的 state 文件名运行 prepare。它读取源文件生成操作标识、大小和摘要，将完整元数据与文件路径、origin 一次性保存，拒绝覆盖已有 state；不产生网络请求。源文件在发送期间保持不变。
@@ -37,29 +37,25 @@ description: 使用已连接的 cf-content-share MCP 分享网址、上传本地
      --state-file /私有目录/report-upload.json
    ```
 
-5. 复用同一 origin 下尚未过期的上传会话；没有可用会话时再调用 `session.create`。将其**结构化结果对象**保存为私有 `session.json`，保留撤销所需标识。不要把 Token 放进命令行、终端输出或最终答复。会话只负责授权和传输地址，不替代第 1 步的业务发现。
-6. 使用已检查的解释器运行 send（下列示例用 `python3`）。脚本重新检查源文件、会话有效期和同 origin 上传地址，发送一次 metadata 在前、file 在后的流式 multipart 请求。只接受 HTTPS（本地回环测试允许 HTTP），不跟随重定向、不自动重试、不输出 Token 或原始响应正文。
+5. 复用同一 origin 下尚未过期的私有凭据，或经现有已登录 MCP 调用 `upload.authorization`，将其**结构化结果对象**保存为私有 `authorization.json`。它返回当前已验证的 Cloudflare Access JWT 和实际 `expires_at`，无需第二次 OAuth 登录，不签发应用 token、不创建会话。这份凭据具有 MCP 管理权限，可能有效近 14 天，与 15 分钟的 OAuth access token 不同；不输出、不放入命令参数，也不读取客户端私有 OAuth 存储。
+6. 使用已检查的解释器运行 send（下列示例用 `python3`）。脚本重新检查源文件、凭据有效期和同 origin 上传地址，发送一次 metadata 在前、file 在后的流式 multipart 请求。只接受 HTTPS（本地回环测试允许 HTTP），不跟随重定向、不自动重试、不输出 Token 或原始响应正文。
 
    ```sh
    python3 /绝对路径/cf-content-share/scripts/upload.py send \
      --state-file /私有目录/report-upload.json \
-     --session-file /私有目录/session.json
+     --authorization-file /私有目录/authorization.json
    ```
 
 7. send 仅输出传输摘要 `{operation_id, transport_status, http_status?, error_code?}`。退出 0 表示完整收到 2xx 响应；退出 1 表示本地校验失败或完整非 2xx 响应；退出 2 表示网络中断或响应未完整接收，结果不明。**任何退出码都不表示资源已发布。** 请求发出后，无论 HTTP 状态或退出码如何，都通过 MCP `operation.get` 查询原操作，按发现的结果和恢复语义解释权威状态；只从该结果给出最终分享地址。未发送的本地校验失败先修正本地输入，不能声称已有服务端结果。
 
-同一会话可用于多份文件；每份有意创建的新分享使用独立 state。脚本不签发 OAuth 或会话，也不调用 MCP。POSIX 私有 JSON 文件若可被其他用户读取、最终路径为符号链接或不是普通文件，脚本会拒绝；Windows 也拒绝最终路径的 reparse point（含链接、junction）及非普通文件，私有 ACL 由调用方保证。socket 无活动超时为 30 秒；可捕获的网络中断保留操作 ID 并返回 2，强制终止后沿用已保存 state 查询 MCP。
+同一凭据可用于多份文件；每份有意创建的新分享使用独立 state。脚本不登录或刷新 OAuth，也不调用 MCP。POSIX 私有 JSON 文件若可被其他用户读取、最终路径为符号链接或不是普通文件，脚本会拒绝；Windows 也拒绝最终路径的 reparse point（含链接、junction）及非普通文件，私有 ACL 由调用方保证。socket 无活动超时为 30 秒；可捕获的网络中断保留操作 ID 并返回 2，强制终止后沿用已保存 state 查询 MCP。
 
-## 验证复用 MCP 登录的上传
-
-用户明确要求验证时，发现 `upload.authorization`，要求上传协议 2。将其无凭据 `upload` 对象保存为私有 `contract.json`，按上述步骤 prepare。经现有已认证 MCP 调用该操作，将结构化结果保存为私有 `authorization.json`。它返回当前 Cloudflare Access 凭据，不创建会话，也不要求再次 OAuth 登录。该凭据具有 MCP 管理权限；按返回的实际期限使用，不输出、不放进命令参数，不读取 MCP 客户端的私有 OAuth 存储。
-
-使用本 Skill 的脚本执行 `send --state-file /私有目录/state.json --authorization-file /私有目录/authorization.json`，保留同 origin、私有文件、不可变 state 和最终 `operation.get` 检查。不能混用协议 1 state 与协议 2 凭据，也不能手工编辑 state。操作不存在时报告缺少验证入口，不静默创建应用会话。此入口尚未替代默认会话流程；分别报告本地模拟 Access 与真实客户端验证结果。
+旧版 v1 state 或保存协议 1 的 v2 state 可配合当前 OAuth 凭据发送，无需编辑 state。脚本只将旧同源 `/upload` 传输改为发现的入口，保留操作标识、元数据和原文件字节；不再接受 `--session-file` 或应用 Bearer token。
 
 ## 结果不明与恢复
 
 保留原 state 和完整 metadata。先发现并调用 `operation.get`，再按服务当次 `recovery` 与操作结果决定下一步：查询、服务端恢复、明确允许的同操作重传，或报告已不可用。查询失败不能推断操作不存在，HTTP 成功也不能推断可以分享。
 
-只有服务明确允许重新发送正文时才复用同一 state 调用 send；不得修改已保存的元数据、重新计算业务期限或换操作标识绕过未知结果。需要换上传会话时通过 MCP 获取新的私有会话文件，仍保留原 state，并先查清原操作。网络故障、服务错误和请求中断均不得触发循环盲传。
+只有服务明确允许重新发送正文时才复用同一 state 调用 send；不得修改已保存的元数据、重新计算业务期限或换操作标识绕过未知结果。凭据过期或被拒绝时，通过 MCP 获取当前凭据并保存为新的私有授权文件，仍保留原 state，并先查清原操作。网络故障、服务错误和请求中断均不得触发循环盲传。
 
-源文件或业务参数确实需要改变时，先处理原操作，再按用户意图决定是否创建新的分享。仅在用户要求撤销或会话确定不再需要时发现并调用 `session.revoke`，随后移除对应本地凭据。
+源文件或业务参数确实需要改变时，先处理原操作，再按用户意图决定是否创建新的分享。不再需要时删除本地授权文件。

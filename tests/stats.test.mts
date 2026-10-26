@@ -536,7 +536,7 @@ async function uploadFile(
   bytes: Buffer,
   changes: Record<string, unknown> = {},
 ) {
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const metadata = {
     operation_id: randomUUID(),
     filename: 'stats.bin',
@@ -553,10 +553,10 @@ async function uploadFile(
     bytes,
     Buffer.from(`\r\n--${boundary}--\r\n`),
   ]);
-  const response = await request('/upload', {
+  const response = await request('/mcp/upload', {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${token}`,
+      'cf-access-jwt-assertion': token,
       'content-type': `multipart/form-data; boundary=${boundary}`,
     },
     body,

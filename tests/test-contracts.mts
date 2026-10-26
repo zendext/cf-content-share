@@ -49,20 +49,6 @@ export type Page<T> = {
   has_more: boolean;
   next_cursor: string | null;
 };
-export type Session = {
-  session_id: string;
-  token: string;
-  created_at: number;
-  expires_at: number;
-  upload: UploadContract;
-};
-export type ListedSession = {
-  id: string;
-  created_at: number;
-  expires_at: number;
-  revoked: number;
-  client: string | null;
-};
 export type Schema = {
   [key: string]: unknown;
   type?: string | string[];
@@ -88,7 +74,6 @@ export type UploadContract = {
 };
 export type Descriptor = {
   token?: never;
-  session_id?: never;
   name: string;
   inputSchema: Schema;
   resultSchema: Schema;
@@ -143,9 +128,6 @@ export type Results = {
   'operation.retry': ResourceResult;
   'resource.list': Page<Resource>;
   'operation.list': Page<Operation>;
-  'session.create': Session;
-  'session.list': Page<ListedSession>;
-  'session.revoke': ListedSession;
   'storage.get': Storage;
   'stats.query': StatsResult;
   'stats.samples': StatsResult;

@@ -1,4 +1,4 @@
-# 文件、上传会话与恢复
+# 文件、OAuth 上传与恢复
 
 [English](../en/files.md) · [文档入口](../../README.zh-CN.md#文档)
 
@@ -6,13 +6,13 @@
 
 ## 上传协议
 
-1. 经已认证的 MCP 调用 `describe`，指定 `operation=session.create`，即可取得无凭据的 `upload` 契约，无需先创建会话。它包括 `protocol_version=1`、上传 URL／方法、`generated_fields`、`max_metadata_bytes`、`metadata_schema`、`result_schema`、`result_semantics` 和 `recovery`。需要上传授权时再调用 `session.create`（可传 `client` 标识），返回 `session_id`、仅本次返回的 `token`、创建时间、固定 24 小时到期时间，以及同源的完整 `upload` 契约。
-2. 客户端先记录操作标识、文件大小和 SHA-256，再 `POST /upload`。请求头为 `Authorization: Bearer <token>`；同一会话可上传多份文件。会话列表分页且不返回明文或摘要；撤销和到期阻止新的上传，已受理的上传仍可收尾。
+1. 经已登录 MCP 调用 `describe`，指定 `operation=upload.authorization`，取得无凭据的 `upload` 契约，包括 `protocol_version=2`、URL／方法、`generated_fields`、`max_metadata_bytes`、`metadata_schema`、`result_schema`、`result_semantics` 和 `recovery`。经同一 MCP 登录调用该操作，取得当前已验证的 Cloudflare Access JWT、其实际 `expires_at` 和相同契约，无需单独授权或创建应用会话。
+2. 客户端先保存操作标识、大小和 SHA-256，再向 `POST /mcp/upload` 发送 `Cf-Access-Token: <token>`。现有 Access 应用保护该路径，Worker 执行与 MCP 相同的签名、issuer、audience 和时间校验。旧 `/upload` 入口和 `session.*` 操作已移除。
 3. 请求体为 `multipart/form-data`：先一个名为 `metadata` 的 JSON 部分，再一个名为 `file` 的二进制部分，不能添加其他部分。元数据缓冲上限 16 KiB；multipart 边界最多 70 字符，前后封装分别有 256 KiB 读取预算。
 4. 必填字段：`operation_id`、`filename`、`content_type`、`size_bytes`、`sha256`。可选字段：`title`、`description`、`tags`、`retention_seconds`。摘要为 64 位小写十六进制；大小为 0～9007199254740991 的整数。内容类型使用不带参数的 MIME 值，文件名不能含控制字符。具体长度和标签限制以返回 Schema 为准。
 5. `201` 表示资源已经发布，`202` 表示完整对象仍需服务端收尾，`409` 的操作结果表示当前正在处理或不能并发重传，参数冲突返回 `IDEMPOTENCY_CONFLICT`。校验／传输失败返回 `422` 和持久操作、资源状态；认证、元数据或容量在受理前失败时不创建后台上传任务。所有响应禁止缓存。
 
-D1 只保存 Token 的 SHA-256。应用 Token 仅能上传；OAuth 撤销不会自动撤销已签发的应用 Token。客户端应按服务 origin 保存会话和操作标识，状态文件仅当前用户可读，不把 Token 写入日志。
+导出的 JWT 具有 MCP 管理权限，必须私密保存。OAuth access token 有效 15 分钟，MCP 客户端在 14 天 grant 内自动刷新；导出的源站 Access JWT 是另一份凭据，线上实测有效期接近 14 天。始终按返回的 `expires_at` 使用，不能把它当作 15 分钟凭据，也不能假定撤销 OAuth 会立即使已经导出的 JWT 失效。凭据放在仓库外、按 origin 隔离的私有文件中，不再需要时删除。服务不签发应用 token，也不保存上传会话。
 
 每次 HTTP 尝试之后都调用 `operation.get` 确认当前权威结果，包括完整 2xx、非 2xx 和结果不明的情况；HTTP 状态不代表当前可访问性。已发布或已删除时重试相同创建参数仍返回原资源；不同参数复用标识被拒绝。`steps.upload=needs_reupload` 时，可沿用原操作标识和全部参数重新发送完整文件。同文件名或同摘要的新操作生成独立 12 位 ID，不覆盖、不去重。删除后的 ID 和原操作映射永久保留。
 
@@ -22,17 +22,13 @@ D1 只保存 Token 的 SHA-256。应用 Token 仅能上传；OAuth 撤销不会�
 
 `prepare --file --origin --metadata-file --contract-file --state-file` 读取私有 JSON：metadata 是 Agent 按当次 Schema 构造的业务参数，contract 是发现响应中的无凭据 `upload` 对象。脚本保护并生成 `operation_id`、`size_bytes`、`sha256`，检查 JSON／数值安全性、传输协议和元数据字节上限，一次性保存 v2 state，拒绝覆盖。它不内置业务字段列表、不补默认值、不解释业务 Schema；最终业务校验仍由服务端执行。省略、显式 `null`、数组和嵌套对象按原值保存。
 
-`send --state-file --session-file` 重新核对文件大小和摘要、私有文件权限、会话有效期、协议和同 origin 地址，流式发送一次请求。重定向不跟随，网络失败不自动重传，响应正文和凭据不输出。
+`send --state-file --authorization-file` 读取 `upload.authorization` 的私有结构化结果，重新核对文件大小、摘要、权限、凭据期限、协议和同 origin 地址，流式发送一次请求。脚本不会登录或刷新 OAuth，不跟随重定向、不自动重传、不输出响应正文或凭据。
 
 传输摘要为 `{operation_id, transport_status, http_status?, error_code?}`。完整收到 2xx 时退出 0，完整非 2xx 或本地输入错误退出 1，请求失败或响应不完整退出 2；这三个退出码均不表示资源已发布。本地输入错误可能在发送之前发生，只输出脱敏错误。Agent 在实际 HTTP 尝试后始终查询 `operation.get`，按服务发现的 `result_schema`、`result_semantics` 和 `recovery` 解释可访问性、规范分享 URL 和恢复动作。
 
 已保存 state 的元数据不得编辑；恢复必须沿用原 ID、参数及文件字节。源文件或用户要求改变时先处理旧操作，再决定是否有意创建新分享。更新时同步 Skill 和上传脚本；兼容传输协议范围内的业务字段变化由发现契约承载，不要求本地代码同步。
 
-## 验证复用 MCP 登录的上传
-
-`describe(operation=upload.authorization)` 返回协议 2 的无凭据上传契约；`invoke` 同名操作返回当前已验证的 Cloudflare Access JWT、其实际 `expires_at` 以及相同契约，不创建会话。将契约和凭据分别保存为私有 `contract.json`、`authorization.json`，沿用上述 prepare，再执行 `send --state-file <私有 state> --authorization-file <私有 authorization.json>`。脚本只向契约中同 origin 的 `/mcp/upload` 发送 `Cf-Access-Token`，不会登录或刷新 OAuth，也不读取 MCP 客户端的私有凭据。
-
-该凭据具有 MCP 管理权限。过期后经已登录 MCP 再取当前凭据，保留原操作标识、元数据和文件；重新发送前仍查询 `operation.get`。协议 1 和协议 2 的 state 与传输契约不能混用或手工修改。该入口用于验证真实客户端交接，尚未替代现有上传会话流程。
+旧版 v1 state、以及保存协议 1 的 v2 state，可以配合 MCP 返回的新协议 2 凭据继续使用。脚本将原同源 `/upload` 传输改到发现的 OAuth 入口，不改写 state、操作标识、元数据或文件。重新发送前先查询原操作。`--session-file` 和旧 Bearer 凭据不再受理。
 
 ## 资源有效期
 

@@ -42,7 +42,7 @@ Inspect the existing Zone, DNS, Workers, Access organization, IdP, applications 
 
 1. Reuse the existing Zero Trust team without renaming or recreating it. If absent, create the team name supplied by the user.
 2. Reuse or add a Cloudflare IdP with **Restrict to account members** enabled. The allowed email must belong to the account; do not broaden policy automatically.
-3. Create a Self-hosted Access application protecting only the sharing host's `mcp` path. Use one Allow policy with **Emails** specifying the administrator's full email and only the IdP above. Ensure parent applications do not intercept `/r/*`, `/upload` or OAuth discovery. Do not substitute Everyone, broad email domains or Bypass for personal authentication.
+3. Create a Self-hosted Access application protecting only the sharing host's `mcp` path. Use one Allow policy with **Emails** specifying the administrator's full email and only the IdP above. Ensure parent applications do not intercept `/r/*` or OAuth discovery. Do not substitute Everyone, broad email domains or Bypass for personal authentication.
 4. Enable **Managed OAuth**, allowing localhost, loopback or explicit HTTPS redirect URIs as required by the actual clients. Set the OAuth access-token lifetime to `15m` and grant-session duration to `336h` (14 days), and verify silent refresh. The grant duration controls when users must log in again; it does not make individual access tokens last 14 days. Copy the team issuer and Application Audience (AUD).
 5. Use proxied DNS and a `<host>/*` Worker Route. A dedicated subdomain without an origin can use an AAAA `100::` placeholder. Do not overwrite conflicting targets, Routes or Custom Domains. Configure DNS and Access separately through the dashboard or API; the initialization script does not manage them.
 
@@ -106,8 +106,10 @@ Check the final code with `npm run check` and a dry-run using production configu
 
 ## Verify the deployment
 
-Verify real MCP calls, administrator login and rejection of other identities, OAuth refresh/revocation, anonymous sharing, rejection of invalid upload tokens, download digests, deletion/recovery, event statistics and timezones, and actual Cron execution. Verify default, custom and permanent retention, deadline rejection for short-lived GET/HEAD/Range requests and file cleanup. Delete test resources and revoke the test session.
+Verify real MCP calls, administrator login and rejection of other identities, OAuth refresh/revocation, anonymous sharing, rejection of invalid upload tokens, download digests, deletion/recovery, event statistics and timezones, and actual Cron execution. Verify default, custom and permanent retention, deadline rejection for short-lived GET/HEAD/Range requests and file cleanup. Delete test resources and remove local test credentials.
 
 `npm run test:deployment` uses mocked APIs and does not establish real permissions. `npm run check` uses local workerd; production-configuration dry-runs only validate packaging. Cross-location propagation, cloud concurrency recovery and long-lived browser caching need separate tests. Platform request/storage limits still apply when product capacity limits are omitted; check limits and costs for the actual account and Zone.
 
 Agent setup on a brand-new account needs its own acceptance test; verification of an existing installation does not establish it. Monitor Workers Logs/Metrics and D1/KV/R2/AE usage without logging tokens or file contents.
+
+After verifying a real upload using the existing MCP login, back up D1, deploy the OAuth-only Worker, then apply `0004_remove_upload_sessions.sql`. It drops only the old credential table; resource, operation, execution-lease and capacity data remain intact. The old Worker requires restoring that table before rollback. Update the installed Skill and script together. Verify the old route and operations are unavailable, then repeat upload, operation lookup, digest check and deletion.

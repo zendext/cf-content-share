@@ -26,9 +26,8 @@ SOCKET_TIMEOUT = 30
 GENERATED_FIELDS = ('operation_id', 'size_bytes', 'sha256')
 SAFE_ERRORS = {
     'INVALID_ARGUMENTS', 'INVALID_ORIGIN', 'INVALID_FILE', 'INVALID_METADATA',
-    'INVALID_CONTRACT', 'INVALID_STATE', 'INVALID_SESSION', 'INVALID_PRIVATE_JSON',
-    'UNSAFE_PRIVATE_FILE', 'STATE_EXISTS', 'FILE_CHANGED', 'SESSION_EXPIRED',
-    'SESSION_ORIGIN_MISMATCH', 'INVALID_AUTHORIZATION', 'AUTHORIZATION_EXPIRED',
+    'INVALID_CONTRACT', 'INVALID_STATE', 'INVALID_PRIVATE_JSON',
+    'UNSAFE_PRIVATE_FILE', 'STATE_EXISTS', 'FILE_CHANGED', 'INVALID_AUTHORIZATION', 'AUTHORIZATION_EXPIRED',
     'AUTHORIZATION_ORIGIN_MISMATCH',
 }
 
@@ -275,8 +274,7 @@ def prepare_upload(*, file, origin, state_file, metadata_file, contract_file):
     origin = normalize_origin(origin)
     contract = private_json(contract_file)
     upload = protocol(contract, origin)
-    authorization = 'Bearer <token>' if upload['protocol_version'] == 1 else 'Cf-Access-Token: <token>'
-    if (contract.get('authorization') != authorization or not isinstance(contract.get('generated_fields'), list)
+    if (upload['protocol_version'] != 2 or contract.get('authorization') != 'Cf-Access-Token: <token>' or not isinstance(contract.get('generated_fields'), list)
             or len(contract['generated_fields']) != len(GENERATED_FIELDS)
             or not all(field in contract['generated_fields'] for field in GENERATED_FIELDS)):
         fail('INVALID_CONTRACT')
@@ -418,7 +416,7 @@ def stream_request(network_socket, chunks):
     return bytes(incoming)
 
 
-def transport(url, token, source, prefix, suffix, size, boundary, operation_id, cloudflare_access=False):
+def transport(url, token, source, prefix, suffix, size, boundary, operation_id):
     result = {'operation_id': operation_id, 'transport_status': 'request_failed'}
     parsed = urlsplit(url)
     connection_class = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
@@ -430,10 +428,7 @@ def transport(url, token, source, prefix, suffix, size, boundary, operation_id, 
         connection.auto_open = False
         network_socket = connection.sock
         connection.putrequest('POST', parsed.path + ('?' + parsed.query if parsed.query else ''))
-        if cloudflare_access:
-            connection.putheader('Cf-Access-Token', token)
-        else:
-            connection.putheader('Authorization', 'Bearer ' + token)
+        connection.putheader('Cf-Access-Token', token)
         connection.putheader('Content-Type', 'multipart/form-data; boundary=' + boundary)
         connection.putheader('Content-Length', str(len(prefix) + size + len(suffix)))
         connection.endheaders()
@@ -484,9 +479,7 @@ def transport(url, token, source, prefix, suffix, size, boundary, operation_id, 
         connection.close()
 
 
-def send_upload(*, state_file, session_file=None, authorization_file=None):
-    if bool(session_file) == bool(authorization_file):
-        fail('INVALID_ARGUMENTS')
+def send_upload(*, state_file, authorization_file):
     state = private_json(state_file)
     if (not isinstance(state, dict) or type(state.get('version')) is not int or state['version'] not in (1, 2)
             or not isinstance(state.get('file'), str) or not os.path.isabs(state['file'])
@@ -500,44 +493,39 @@ def send_upload(*, state_file, session_file=None, authorization_file=None):
     with open_source(state['file']) as source:
         if inspect_file(source) != {key: metadata[key] for key in ('size_bytes', 'sha256')}:
             fail('FILE_CHANGED')
-        session = private_json(authorization_file or session_file)
-        cloudflare_access = authorization_file is not None
-        invalid_credentials = 'INVALID_AUTHORIZATION' if cloudflare_access else 'INVALID_SESSION'
-        token_pattern = r'[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2}' if cloudflare_access else r'[A-Za-z0-9_-]{43}'
-        if (not isinstance(session, dict) or not isinstance(session.get('token'), str)
-                or len(session['token']) > 16384 or re.fullmatch(token_pattern, session['token']) is None
-                or not integer(session.get('expires_at')) or not isinstance(session.get('upload'), dict)
-                or session['upload'].get('method') != 'POST'):
-            fail(invalid_credentials)
-        session_upload = session['upload']
-        expected_version = 2 if cloudflare_access else 1
-        if not (type(session_upload.get('protocol_version')) is int and session_upload['protocol_version'] == expected_version):
-            legacy_keys = {'url', 'method', 'authorization', 'body', 'metadata_schema', 'recovery'}
-            if cloudflare_access or state['version'] != 1 or 'protocol_version' in session_upload or not session_upload.keys() <= legacy_keys:
-                fail(invalid_credentials)
-        if cloudflare_access and session_upload.get('authorization') != 'Cf-Access-Token: <token>':
-            fail(invalid_credentials)
-        if session['expires_at'] <= int(time.time()):
-            fail('AUTHORIZATION_EXPIRED' if cloudflare_access else 'SESSION_EXPIRED')
-        url = endpoint(session_upload.get('url'), origin, 'AUTHORIZATION_ORIGIN_MISMATCH' if cloudflare_access else 'SESSION_ORIGIN_MISMATCH')
-        if upload and (upload['protocol_version'] != expected_version or url != upload['url']):
-            fail(invalid_credentials)
+        authorization = private_json(authorization_file)
+        if (not isinstance(authorization, dict) or not isinstance(authorization.get('token'), str)
+                or len(authorization['token']) > 16384
+                or re.fullmatch(r'[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2}', authorization['token']) is None
+                or not integer(authorization.get('expires_at')) or not isinstance(authorization.get('upload'), dict)):
+            fail('INVALID_AUTHORIZATION')
+        contract = authorization['upload']
+        if (type(contract.get('protocol_version')) is not int or contract['protocol_version'] != 2
+                or contract.get('method') != 'POST' or contract.get('authorization') != 'Cf-Access-Token: <token>'):
+            fail('INVALID_AUTHORIZATION')
+        if authorization['expires_at'] <= int(time.time()):
+            fail('AUTHORIZATION_EXPIRED')
+        url = endpoint(contract.get('url'), origin, 'AUTHORIZATION_ORIGIN_MISMATCH')
+        if upload:
+            # Old saved operations retain their ID, metadata and bytes; only authentication changes.
+            expected_url = origin + '/upload' if upload['protocol_version'] == 1 else url
+            if upload['url'] != expected_url:
+                fail('INVALID_AUTHORIZATION')
         boundary = 'cf-share-' + str(uuid.uuid4())
         prefix = (f'--{boundary}\r\nContent-Disposition: form-data; name="metadata"\r\nContent-Type: application/json\r\n\r\n'.encode()
                   + json_bytes(metadata) + f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="upload"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode())
         suffix = f'\r\n--{boundary}--\r\n'.encode()
         if len(prefix) + metadata['size_bytes'] + len(suffix) > MAX_SAFE_INTEGER:
             fail('INVALID_FILE')
-        return transport(url, session['token'], source, prefix, suffix, metadata['size_bytes'], boundary, metadata['operation_id'], cloudflare_access)
+        return transport(url, authorization['token'], source, prefix, suffix, metadata['size_bytes'], boundary, metadata['operation_id'])
 
 
 HELP = '''Python 3.12+; standard library only, no npm, pip or virtual environment required.
 prepare --file PATH --origin HTTPS_ORIGIN --metadata-file PRIVATE_JSON --contract-file PRIVATE_JSON --state-file NEW_JSON
-send    --state-file PRIVATE_JSON --session-file PRIVATE_JSON
 send    --state-file PRIVATE_JSON --authorization-file PRIVATE_JSON
 
 prepare preserves metadata, adds operation_id/size_bytes/sha256, and saves a new private state.
-Use the credential-free upload object from describe(session.create) or describe(upload.authorization).
+Use the credential-free upload object from describe(upload.authorization).
 send reads the matching invoke result, rechecks the file, and sends once.
 Protocol 2 uses the current Cloudflare Access credential from upload.authorization; it requires no second login.
 HTTPS required except loopback HTTP. No redirects or automatic retries. Never pass a Token as an argument.
@@ -556,7 +544,7 @@ def main(args):
     try:
         if sys.version_info < (3, 12):
             fail('LOCAL_ERROR')
-        options = {'file', 'origin', 'metadata-file', 'contract-file', 'state-file', 'session-file', 'authorization-file'}
+        options = {'file', 'origin', 'metadata-file', 'contract-file', 'state-file', 'authorization-file'}
         values = {}
         positionals = []
         help_requested = False
@@ -589,7 +577,7 @@ def main(args):
         if len(positionals) != 1 or positionals[0] not in ('prepare', 'send'):
             fail('INVALID_ARGUMENTS')
         command = positionals[0]
-        allowed = {'file', 'origin', 'metadata_file', 'contract_file', 'state_file'} if command == 'prepare' else {'state_file', 'authorization_file' if 'authorization_file' in values else 'session_file'}
+        allowed = {'file', 'origin', 'metadata_file', 'contract_file', 'state_file'} if command == 'prepare' else {'state_file', 'authorization_file'}
         if values.keys() != allowed or not all(values.values()):
             fail('INVALID_ARGUMENTS')
         if command == 'prepare':

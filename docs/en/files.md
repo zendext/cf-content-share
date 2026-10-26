@@ -1,4 +1,4 @@
-# Files, upload sessions and recovery
+# Files, OAuth uploads and recovery
 
 [简体中文](../zh-CN/files.md) · [Documentation](../../README.md#documentation)
 
@@ -6,13 +6,13 @@ File contents travel over HTTP. MCP exposes only `describe` and `invoke`; discov
 
 ## Upload protocol
 
-1. Call authenticated MCP `describe` with `operation=session.create` to obtain the credential-free `upload` contract without creating a session. It contains `protocol_version=1`, URL/method, `generated_fields`, `max_metadata_bytes`, `metadata_schema`, `result_schema`, `result_semantics` and `recovery`. When authorization is needed, call `session.create` with an optional `client` label. It returns `session_id`, a token shown only once, creation time, a fixed 24-hour expiration and the complete same-origin upload contract.
-2. Save the operation identifier, size and SHA-256 before `POST /upload`, using `Authorization: Bearer <token>`. One session can upload multiple files. Session lists are paginated and reveal neither plaintext tokens nor digests. Revocation and expiration prevent new uploads; already accepted uploads may finish.
+1. Call authenticated MCP `describe` with `operation=upload.authorization` to obtain the credential-free `upload` contract: `protocol_version=2`, URL/method, `generated_fields`, `max_metadata_bytes`, `metadata_schema`, `result_schema`, `result_semantics` and `recovery`. Invoke the same operation through the existing MCP login to obtain the current verified Cloudflare Access JWT, its actual `expires_at` and the same contract. No separate authorization or application session is created.
+2. Save the operation identifier, size and SHA-256 before `POST /mcp/upload`, using `Cf-Access-Token: <token>`. The existing Access application protects this path; the Worker repeats the same signature, issuer, audience and time checks as MCP. The old `/upload` route and `session.*` operations are removed.
 3. Use `multipart/form-data` with exactly one JSON part named `metadata`, followed by one binary part named `file`. Metadata is bounded to 16 KiB, boundaries to 70 characters, and framing before and after the body has separate 256 KiB read budgets.
 4. Required fields are `operation_id`, `filename`, `content_type`, `size_bytes` and `sha256`. Optional fields include `title`, `description`, `tags` and `retention_seconds`. Digests are 64 lowercase hexadecimal characters; size is an integer from 0 to 9007199254740991. MIME values have no parameters and filenames cannot contain control characters. The discovered Schema defines exact length and tag limits.
 5. `201` means publication completed; `202` means a complete object still needs server finalization. A `409` operation result indicates ongoing work or a blocked concurrent retransmission; conflicting parameters return `IDEMPOTENCY_CONFLICT`. Validation/transport failures return `422` with durable operation and resource states. Authentication, metadata or capacity failures before acceptance create no background upload task. All responses disable caching.
 
-D1 stores only token SHA-256 digests. Application tokens authorize only uploads; OAuth revocation does not revoke issued application tokens. Keep sessions and operation IDs scoped to the service origin in files readable only by the current user. Never log tokens.
+The exported JWT has MCP management authority and must be kept private. OAuth access tokens last 15 minutes and refresh through the MCP client within the 14-day grant. The exported origin Access JWT is a different credential: live verification observed nearly 14 days of validity. Always use its returned `expires_at`; do not treat it as a 15-minute credential or assume OAuth revocation immediately invalidates an already exported JWT. Store credentials outside the repository in origin-scoped private files and remove them when no longer needed. The service issues no application token and stores no upload sessions.
 
 After every HTTP attempt, call `operation.get` for the authoritative current result, including complete 2xx, non-2xx and unknown outcomes. HTTP status does not establish current accessibility. Replaying the same creation parameters returns the original resource even if published or deleted; changing parameters under the same ID is rejected. With `steps.upload=needs_reupload`, resend the complete file under the original operation ID and parameters. New operations create independent 12-character IDs even for identical filenames or digests. Deleted IDs and operation mappings remain reserved permanently.
 
@@ -22,17 +22,13 @@ The [Skill](../../skills/cf-content-share/SKILL.md) guides contract discovery, u
 
 `prepare --file --origin --metadata-file --contract-file --state-file` reads private JSON files. Metadata contains business parameters assembled from the current Schema; contract contains the discovered credential-free `upload` object. The script generates and protects `operation_id`, `size_bytes` and `sha256`, validates JSON/numeric safety, transport protocol and metadata byte limits, and saves v2 state once without overwriting. It has no built-in business field list, defaults or business-Schema interpreter. The server performs final business validation. Omitted fields, explicit `null`, arrays and nested objects are preserved.
 
-`send --state-file --session-file` rechecks file size and digest, private permissions, session expiration, protocol and same-origin URLs, then streams one request. It never follows redirects, automatically retransmits on network failure, or prints response bodies or credentials.
+`send --state-file --authorization-file` reads the private structured result from `upload.authorization`, rechecks file size and digest, permissions, credential expiration, protocol and same-origin URLs, then streams one request. It does not log in, refresh OAuth, follow redirects, automatically retransmit, or print response bodies or credentials.
 
 The transport summary is `{operation_id, transport_status, http_status?, error_code?}`. Complete 2xx responses exit 0; complete non-2xx responses or local input errors exit 1; failed requests or incomplete responses exit 2. None of these exit codes establishes publication. Local errors may occur before a request and expose only sanitized diagnostics. After an actual HTTP attempt, the agent always queries `operation.get`, interpreting accessibility, the canonical URL and recovery using the discovered `result_schema`, `result_semantics` and `recovery`.
 
 Never edit saved state metadata. Recovery preserves the original ID, parameters and file bytes. If the source or user requirements change, resolve the old operation before deciding to create another share. Update the Skill and helper together; compatible business-field changes are then carried by discovery without requiring local code updates.
 
-## Validate uploads using the existing MCP login
-
-`describe(operation=upload.authorization)` returns a credential-free protocol 2 upload contract. Invoking that operation returns the current verified Cloudflare Access JWT, its actual `expires_at`, and the same contract without creating a session. Save the contract and credential separately as private `contract.json` and `authorization.json`, use prepare as above, then run `send --state-file <private-state> --authorization-file <private-authorization.json>`. The script sends `Cf-Access-Token` only to the contract's same-origin `/mcp/upload` endpoint. It neither logs in nor refreshes OAuth and never reads the MCP client's private credentials.
-
-The credential has MCP management authority. If it expires, obtain the current credential through authenticated MCP while preserving the operation ID, metadata and file, and still query `operation.get` before any retransmission. Do not mix protocol 1 and protocol 2 states and transport contracts or edit saved state. This path validates the real client handoff; it has not replaced existing upload sessions.
+Existing v1 state and v2 state containing protocol 1 remain usable with fresh protocol 2 authorization from MCP. The script switches the old same-origin `/upload` transport to the discovered OAuth endpoint without rewriting the state, operation ID, metadata or file. Query the original operation before any retransmission. `--session-file` and legacy Bearer credentials are no longer accepted.
 
 ## Resource lifetime
 

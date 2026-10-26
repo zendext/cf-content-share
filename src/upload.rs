@@ -1,4 +1,4 @@
-use crate::{auth, catalog, json_response, recovery, sessions, store};
+use crate::{auth, catalog, json_response, recovery, store};
 use futures_util::{
     Stream,
     future::{Either, select},
@@ -55,18 +55,12 @@ impl Stream for Input {
 const UPLOAD_LEASE: i64 = 120;
 
 pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
-    if req.path() == "/mcp/upload"
-        && let Some(origin) = req.headers().get("Origin")?
+    if let Some(origin) = req.headers().get("Origin")?
         && origin != env.var("PUBLIC_ORIGIN")?.to_string()
     {
         return error("INVALID_ORIGIN", 403);
     }
-    let authorized = if req.path() == "/mcp/upload" {
-        auth::verify(req, env).await.is_ok()
-    } else {
-        sessions::authorized(req, env).await?
-    };
-    if !authorized {
+    if auth::verify(req, env).await.is_err() {
         return error("UNAUTHORIZED", 401);
     }
     let content_type = req.headers().get("Content-Type")?.unwrap_or_default();

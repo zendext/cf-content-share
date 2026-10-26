@@ -244,6 +244,11 @@ before(async () => {
       .replace(/^--.*$/gm, '')
       .replaceAll('\n', ' '),
   );
+  await db.exec(
+    (await readFile('migrations/0004_remove_upload_sessions.sql', 'utf8'))
+      .replace(/^--.*$/gm, '')
+      .replaceAll('\n', ' '),
+  );
   client = new Client({ name: 'service-test', version: '1.0.0' });
   const transport = new StreamableHTTPClientTransport(
     new URL(`${origin}/mcp`),
@@ -360,7 +365,7 @@ test('Access assertion verification, origin checks and MCP protocol boundaries',
     await (await request('/r/invalid', { method: 'HEAD' })).text(),
     '',
   );
-  assert.equal((await request('/upload', { method: 'POST' })).status, 401);
+  assert.equal((await request('/mcp/upload', { method: 'POST' })).status, 401);
 });
 
 test('MCP negotiates supported versions and rejects unsupported HTTP version headers', async () => {
@@ -493,7 +498,7 @@ test('two tools discover strict operation schemas, results, side effects and val
     ['describe', 'invoke'],
   );
   const catalog = await client.callTool({ name: 'describe', arguments: {} });
-  assert.equal((catalog.structuredContent as Catalog).operations.length, 15);
+  assert.equal((catalog.structuredContent as Catalog).operations.length, 12);
   assert.equal(
     (catalog.structuredContent as Catalog).defaults.mapping_freshness_seconds,
     86400,
@@ -1152,28 +1157,25 @@ type Multipart = Omit<ReturnType<typeof multipart>, 'body'> & {
   body: Buffer | ReadableStream<Uint8Array>;
 };
 const upload = (token: string, form: Multipart) =>
-  request('/upload', {
+  request('/mcp/upload', {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${token}`,
+      'cf-access-jwt-assertion': token,
       'content-type': form.contentType,
     },
     body: form.body,
     duplex: 'half',
   });
 async function uploaded(data: Buffer, changes: Record<string, unknown> = {}) {
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const form = multipart(data, changes);
   const response = await upload(token, form);
   assert.equal(response.status, 201, await response.clone().text());
   return { ...((await response.json()) as ResourceResult), token, form };
 }
 
-test('MCP exports only its verified Access assertion without creating a session; OAuth upload shares JWT validation', async () => {
+test('MCP exports only its verified Access assertion without persisting credentials; OAuth upload shares JWT validation', async () => {
   const token = jwt();
-  const before = await db
-    .prepare('SELECT count(*) AS n FROM upload_sessions')
-    .first();
   const statements: D1Event[] = [];
   onD1Before = (event) => {
     statements.push(event);
@@ -1214,10 +1216,6 @@ test('MCP exports only its verified Access assertion without creating a session;
   assert.equal(authorization.upload.protocol_version, 2);
   assert.equal(authorization.upload.authorization, 'Cf-Access-Token: <token>');
   assert.deepEqual(statements, []);
-  assert.deepEqual(
-    await db.prepare('SELECT count(*) AS n FROM upload_sessions').first(),
-    before,
-  );
   const descriptor = (
     await client.callTool({
       name: 'describe',
@@ -1271,10 +1269,7 @@ test('MCP exports only its verified Access assertion without creating a session;
   assert.equal((await send(authorization.token)).status, 200);
 });
 
-test('upload discovery is read-only, credential-free and identical to the created session contract', async () => {
-  const before = await db
-    .prepare('SELECT count(*) AS n FROM upload_sessions')
-    .first();
+test('upload discovery is read-only, credential-free and identical to the current authorization contract', async () => {
   const statements: D1Event[] = [];
   onD1Before = (event) => {
     statements.push(event);
@@ -1284,36 +1279,31 @@ test('upload discovery is read-only, credential-free and identical to the create
     detail = (
       await client.callTool({
         name: 'describe',
-        arguments: { operation: 'session.create' },
+        arguments: { operation: 'upload.authorization' },
       })
     ).structuredContent as Descriptor;
   } finally {
     onD1Before = undefined;
   }
   assert.deepEqual(statements, []);
-  assert.deepEqual(
-    await db.prepare('SELECT count(*) AS n FROM upload_sessions').first(),
-    before,
-  );
   assert(
     detail.upload,
-    'describe(session.create) must expose the upload contract without creating a session',
+    'describe(upload.authorization) must expose the upload contract without persisting credentials',
   );
   assert.equal(detail.token, undefined);
-  assert.equal(detail.session_id, undefined);
-  assert.equal(detail.upload.protocol_version, 1);
-  assert.equal(detail.upload.url, `${origin}/upload`);
+  assert.equal(detail.upload.protocol_version, 2);
+  assert.equal(detail.upload.url, `${origin}/mcp/upload`);
   assert.equal(detail.upload.method, 'POST');
-  assert.equal(detail.upload.authorization, 'Bearer <token>');
+  assert.equal(detail.upload.authorization, 'Cf-Access-Token: <token>');
   assert.equal(detail.upload.max_metadata_bytes, 16384);
   assert.deepEqual(detail.upload.generated_fields, [
     'operation_id',
     'size_bytes',
     'sha256',
   ]);
-  const session = await call('session.create');
-  assert.deepEqual(session.upload, detail.upload);
-  assert(!JSON.stringify(detail).includes(session.token));
+  const authorization = await call('upload.authorization');
+  assert.deepEqual(authorization.upload, detail.upload);
+  assert(!JSON.stringify(detail).includes(authorization.token));
   const operationDetail = (
     await client.callTool({
       name: 'describe',
@@ -1377,11 +1367,11 @@ test('discovered upload metadata examples and constraints match authoritative ru
   const detail = (
     await client.callTool({
       name: 'describe',
-      arguments: { operation: 'session.create' },
+      arguments: { operation: 'upload.authorization' },
     })
   ).structuredContent as Descriptor;
   assert(detail.upload, 'missing discovered upload contract');
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const example = detail.upload.metadata_schema.examples[0];
   // The published example describes an empty file, including its actual checksum.
   const valid = multipart(Buffer.alloc(0), {
@@ -1464,50 +1454,45 @@ test('discovered upload metadata examples and constraints match authoritative ru
   assert.equal((await upload(token, tooLarge)).status, 400);
 });
 
-test('session tokens are hash-only, valid for 24h, reusable, paginated and revocable', async () => {
-  const session = await call('session.create', { client: 'file-test' });
-  assert.equal(session.expires_at - session.created_at, 86400);
-  const row = await db
-    .prepare('SELECT * FROM upload_sessions WHERE id=?')
-    .bind(session.session_id)
-    .first();
+test('removed session operations and legacy upload route cannot authorize uploads', async () => {
+  for (const operation of [
+    'session.create',
+    'session.list',
+    'session.revoke',
+  ]) {
+    await errorCall(operation, {}, 'UNKNOWN_OPERATION');
+  }
   assert.equal(
-    row!.token_hash,
-    createHash('sha256').update(session.token).digest('hex'),
+    await db
+      .prepare("SELECT name FROM sqlite_master WHERE name='upload_sessions'")
+      .first(),
+    null,
   );
-  assert(!JSON.stringify(row).includes(session.token));
-  assert(session.upload.metadata_schema.properties.sha256);
+  const form = multipart(Buffer.from('legacy token rejected'));
+  const response = await request('/upload', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${'a'.repeat(43)}`,
+      'content-type': form.contentType,
+    },
+    body: form.body,
+  });
+  assert.equal(response.status, 404);
+  assert.equal((await upload('a'.repeat(43), form)).status, 401);
+  const { token } = await call('upload.authorization');
   for (const data of [Buffer.alloc(0), Buffer.from('second upload')]) {
-    const form = multipart(data);
-    const response = await upload(session.token, form);
-    assert.equal(response.status, 201, await response.clone().text());
-    const result = (await response.json()) as ResourceResult;
-    assert.equal(result.resource.state, 'published');
-    assert.match(result.resource.id, /^[A-Za-z0-9]{12}$/);
+    const current = multipart(data);
+    const accepted = await upload(token, current);
+    assert.equal(accepted.status, 201, await accepted.clone().text());
+    const result = (await accepted.json()) as ResourceResult;
     assert.deepEqual(
       Buffer.from(
         await (await request(`/r/${result.resource.id}`)).arrayBuffer(),
       ),
       data,
     );
-    assert.equal((await upload(session.token, form)).status, 200);
+    assert.equal((await upload(token, current)).status, 200);
   }
-  const page = await call('session.list', { limit: 1 });
-  assert(!JSON.stringify(page).includes(session.token));
-  await call('session.revoke', { session_id: session.session_id });
-  assert.equal(
-    (await upload(session.token, multipart(Buffer.from('revoked')))).status,
-    401,
-  );
-  const expired = await call('session.create');
-  await db
-    .prepare('UPDATE upload_sessions SET expires_at=0 WHERE id=?')
-    .bind(expired.session_id)
-    .run();
-  assert.equal(
-    (await upload(expired.token, multipart(Buffer.alloc(0)))).status,
-    401,
-  );
 });
 
 test('same filename and same hash create independent resources; metadata is mutable, binary attributes are not', async () => {
@@ -1623,7 +1608,7 @@ test('file ranges, HEAD, RFC filename, raw SVG and browser cache headers', async
 });
 
 test('length/hash/framing failures release only fenced reservations and allow same-operation retransmit', async () => {
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const bucket = await mf.getR2Bucket('FILES');
   for (const changes of [
     { size_bytes: 1 },
@@ -1668,7 +1653,7 @@ test('length/hash/framing failures release only fenced reservations and allow sa
 });
 
 test('complete owned object is recovered after D1 publication failure', async () => {
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const form = multipart(Buffer.from('publish recovery'));
   await db.exec(
     "CREATE TRIGGER fail_publish BEFORE UPDATE ON resources WHEN NEW.state='published' AND OLD.state='pending' BEGIN SELECT RAISE(ABORT,'publish failed'); END",
@@ -1711,7 +1696,7 @@ test('concurrent capacity admission and duplicate retries never overreserve or d
     baseline.published_bytes + baseline.reserved_bytes + baseline.cleanup_bytes;
   limits = { TOTAL_STORAGE_BYTES: used + 10, MAX_FILE_BYTES: 10 };
   try {
-    const { token } = await call('session.create');
+    const { token } = await call('upload.authorization');
     assert.equal(
       (await upload(token, multipart(Buffer.alloc(11)))).status,
       413,
@@ -1818,7 +1803,7 @@ test('160 MiB native checksum upload stays below 16 MiB Wasm memory', async () =
     memory = Math.max(memory, event.memory);
   };
   try {
-    const { token } = await call('session.create');
+    const { token } = await call('upload.authorization');
     const response = await upload(token, form);
     assert.equal(response.status, 201, await response.clone().text());
     const result = (await response.json()) as ResourceResult;
@@ -1882,7 +1867,7 @@ test('independent heartbeat protects stalled file headers and paused R2 put beyo
   for (const mode of ['file-header', 'r2-put']) {
     const heartbeat = heartbeatControl();
     const release = deferred();
-    const { token } = await call('session.create');
+    const { token } = await call('upload.authorization');
     const form: Multipart = multipart(Buffer.from('heartbeat'));
     assert(Buffer.isBuffer(form.body));
     if (mode === 'file-header') {
@@ -1951,7 +1936,7 @@ test('lost heartbeat fences a delayed writer; same-operation retry uses another 
       await release.promise;
     }
   };
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const form = multipart(Buffer.from('fenced writer'));
   const uploading = upload(token, form);
   try {
@@ -2008,7 +1993,7 @@ test('logical deletion racing an accepted upload keeps reserved bytes until uplo
       await release.promise;
     }
   };
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const form = multipart(Buffer.from('delete during upload'));
   const uploading = upload(token, form);
   try {
@@ -2136,7 +2121,7 @@ test('cache failures never turn successful R2 body reads into errors and partial
 });
 
 test('ownership mismatch cannot publish a foreign object even with matching bytes and digest', async () => {
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const data = Buffer.from('owned bytes'),
     form = multipart(data);
   const bucket = await mf.getR2Bucket('FILES');
@@ -2173,7 +2158,7 @@ test('ownership mismatch cannot publish a foreign object even with matching byte
 test('expired old recovery cannot fence or release the next upload attempt', {
   timeout: 10000,
 }, async () => {
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const data = Buffer.from('next attempt'),
     form = multipart(data);
   const broken = {
@@ -2247,7 +2232,7 @@ test('KV failure does not hide successful file deletion and failed-upload deleti
   });
   await cron();
   assert.equal((await request(`/r/${a.resource.id}`)).status, 404);
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const form = multipart(Buffer.from('bad hash'), { sha256: '0'.repeat(64) });
   const result = (await (await upload(token, form)).json()) as ResourceResult;
   const deleted = await call('resource.delete', {
@@ -2264,7 +2249,7 @@ test('KV failure does not hide successful file deletion and failed-upload deleti
 });
 
 test('multipart extra fields, missing final delimiter and strict metadata never publish invalid content', async () => {
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   for (const tail of [
     '\r\nContent-Disposition: form-data; name="file"\r\n\r\nextra\r\n--formal-boundary--\r\n',
     '-',
@@ -2331,7 +2316,7 @@ test('execution nonces stay private and admission limits do not rewrite committe
 test('request stream interruption keeps a recoverable unpublished operation', {
   timeout: 10000,
 }, async () => {
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const form: Multipart = multipart(Buffer.alloc(64 * 1024));
   assert(Buffer.isBuffer(form.body));
   const entered = deferred();
@@ -2541,7 +2526,7 @@ test('expiration publication policies apply to files and images without restart 
     assert.equal(retry.resource.published_at, result.resource.published_at);
     assert.equal(retry.resource.expires_at, result.resource.expires_at);
   }
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   for (const retention_seconds of [0, -1, 1.5, '60', true, 9007199254740991])
     assert.equal(
       (
@@ -2906,7 +2891,7 @@ test('expiration legacy pending upload never publishes after deadline and retain
       await release.promise;
     }
   };
-  const { token } = await call('session.create');
+  const { token } = await call('upload.authorization');
   const form = multipart(Buffer.from('expire during upload'));
   const uploading = upload(token, form);
   try {

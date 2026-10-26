@@ -11,7 +11,7 @@
 | 服务 | 用途 |
 | --- | --- |
 | Workers（Rust / Wasm） | MCP、短链跳转、流式上传和下载 |
-| D1 | 资源元数据、会话、操作和容量计数 |
+| D1 | 资源元数据、操作和容量计数 |
 | Workers KV | 公开资源映射 |
 | R2（Standard 私有桶） | 图片和文件正文 |
 | Analytics Engine | 访问事件与最近 30 天的统计查询 |
@@ -81,7 +81,7 @@ npm run dev
 - [使用方式与 MCP 操作](docs/zh-CN/usage.md)
 - [部署与升级](docs/zh-CN/deployment.md)
 - [架构与一致性](docs/zh-CN/architecture.md)
-- [文件、上传会话与恢复](docs/zh-CN/files.md)
+- [文件、OAuth 上传与恢复](docs/zh-CN/files.md)
 - [访问统计](docs/zh-CN/analytics.md)
 
 所有文档均有对应英文版。中文为权威来源，修改时同步两种语言。

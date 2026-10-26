@@ -9,18 +9,17 @@ One Rust/Wasm Worker handles these endpoints and a five-minute Cron:
 | Entry | Authentication and responsibility |
 | --- | --- |
 | `/mcp` | Access Managed OAuth; the Worker validates Access JWTs and handles `describe` / `invoke` |
-| `POST /mcp/upload` | Validation path for shared authorization; the same Access application and JWT checks |
-| `POST /upload` | The Worker validates an application Bearer token and streams to R2 |
+| `POST /mcp/upload` | Streams files under the same Access application and JWT checks |
 | `GET/HEAD /r/<id>` | Public access; check resource state before redirecting or serving bytes |
 | scheduled | Recover registered operations and clean up expired resources and files |
 
-Access protects only `/mcp`, not the entire domain. JWT checks cover signatures, issuer, audience and time. Upload tokens authorize only uploads, last 24 hours and are stored only as digests in D1. OAuth revocation does not automatically revoke issued upload sessions.
+Access protects `/mcp` and its subpaths, leaving public shares accessible anonymously. JWT checks cover signatures, issuer, audience and time. There are no application upload tokens, session operations or upload-session table.
 
-`/mcp/upload` is under the existing Access path. `upload.authorization` returns the current MCP request's verified Cloudflare Access JWT and its actual `exp`, without issuing a token or creating a D1 session. The script sends it as `Cf-Access-Token`; Access forwards an assertion to the Worker, which repeats the same JWT checks. This credential has MCP management authority, not just upload authority. It is not an OAuth refresh token; use the returned expiration rather than assuming it matches the OAuth access token lifetime. Keep `/upload` and its sessions until the real client handoff is verified. Local tests that simulate Access headers do not establish live compatibility.
+`/mcp/upload` is under the existing Access path. `upload.authorization` returns the current MCP request's verified Cloudflare Access JWT and its actual `exp`, without issuing a token or creating a D1 session. The script sends it as `Cf-Access-Token`; Access forwards an assertion to the Worker, which repeats the same JWT checks. This credential has MCP management authority, not just upload authority. It is not an OAuth refresh token; use the returned expiration rather than assuming it matches the OAuth access token lifetime. Live handoff using the existing MCP login has been verified. The origin JWT was valid for nearly 14 days; the separate OAuth access token lasts 15 minutes. Exported JWT revocation must not be assumed to follow OAuth revocation immediately.
 
 ## Sources of state
 
-D1 is authoritative for resources, sessions, operations, execution leases and capacity counters. KV is a derived public mapping; R2 stores private contents. Analytics Engine stores visit events separately. There is no cross-service transaction across D1, KV and R2.
+D1 is authoritative for resources, operations, execution leases and capacity counters. KV is a derived public mapping; R2 stores private contents. Analytics Engine stores visit events separately. There is no cross-service transaction across D1, KV and R2.
 
 [`src/store/`](../../src/store/) centralizes D1 SQL and typed data access; business modules validate inputs, coordinate state transitions and call external services. SQL migrations define persistent Schema; MCP `describe` exposes request and result contracts.
 

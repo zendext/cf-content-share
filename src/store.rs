@@ -1,7 +1,6 @@
 mod models;
 pub mod operations;
 pub mod resources;
-pub mod sessions;
 pub mod uploads;
 pub use models::*;
 
@@ -22,9 +21,9 @@ pub fn now() -> i64 {
 }
 pub fn failure(code: &str, step: &str, retryable: bool) -> Value {
     let message = match code {
-        "UNAUTHORIZED" => "The upload session is missing, revoked, or expired.",
+        "UNAUTHORIZED" => "The Cloudflare Access credential is missing, invalid, or expired.",
         "INVALID_METADATA" => {
-            "Upload metadata does not match the schema or constraints returned by session.create."
+            "Upload metadata does not match the schema or constraints returned by upload.authorization."
         }
         "INVALID_MULTIPART" => "The request must contain valid multipart/form-data.",
         "FILE_TOO_LARGE" => "The declared file size exceeds MAX_FILE_BYTES.",

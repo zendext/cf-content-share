@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'skills/cf-content-share/scripts/upload.py'
-TOKEN = 'a' * 43
+TOKEN = '.'.join(['a' * 43] * 3)
 
 
 class RuntimeTest(unittest.TestCase):
@@ -130,7 +130,7 @@ class UploadTest(unittest.TestCase):
         self.state = self.directory / 'state.json'
         self.metadata_file = self.directory / 'metadata.json'
         self.contract_file = self.directory / 'contract.json'
-        self.session_file = self.directory / 'session.json'
+        self.authorization_file = self.directory / 'authorization.json'
         self.original = '<svg>原始字节</svg>'.encode()
         self.file.write_bytes(self.original)
         self.metadata = {'filename': '图片.svg', 'content_type': 'image/svg+xml', 'title': '分享图片', 'tags': ['资料']}
@@ -144,13 +144,13 @@ class UploadTest(unittest.TestCase):
 
     def set_origin(self, origin):
         self.origin = origin
-        self.contract = {'protocol_version': 1, 'url': origin + '/upload', 'method': 'POST',
-                         'authorization': 'Bearer <token>', 'generated_fields': list(upload.GENERATED_FIELDS),
+        self.contract = {'protocol_version': 2, 'url': origin + '/mcp/upload', 'method': 'POST',
+                         'authorization': 'Cf-Access-Token: <token>', 'generated_fields': list(upload.GENERATED_FIELDS),
                          'max_metadata_bytes': 16384, 'metadata_schema': {'type': 'object'}}
-        self.session = {'session_id': 'session', 'token': TOKEN, 'expires_at': int(time.time()) + 3600,
-                        'upload': {'url': origin + '/upload', 'method': 'POST', 'protocol_version': 1}}
+        self.authorization = {'token': TOKEN, 'expires_at': int(time.time()) + 3600,
+                        'upload': {'url': origin + '/mcp/upload', 'method': 'POST', 'protocol_version': 2, 'authorization': 'Cf-Access-Token: <token>'}}
         self.save(self.contract_file, self.contract)
-        self.save(self.session_file, self.session)
+        self.save(self.authorization_file, self.authorization)
 
     def prepare(self, state=None, **changes):
         return upload.prepare_upload(**{'file': str(self.file), 'origin': self.origin,
@@ -158,7 +158,7 @@ class UploadTest(unittest.TestCase):
                                        'contract_file': str(self.contract_file), **changes})
 
     def send(self, state=None, **changes):
-        return upload.send_upload(**{'state_file': str(state or self.state), 'session_file': str(self.session_file), **changes})
+        return upload.send_upload(**{'state_file': str(state or self.state), 'authorization_file': str(self.authorization_file), **changes})
 
     def assert_error(self, code, operation, **kwargs):
         with self.assertRaises(upload.UploadError) as context:
@@ -180,7 +180,7 @@ class UploadTest(unittest.TestCase):
         self.assertEqual(state['version'], 2)
         self.assertEqual(state['file'], str(self.file.absolute()))
         self.assertEqual(state['origin'], self.origin)
-        self.assertEqual(state['protocol']['protocol_version'], 1)
+        self.assertEqual(state['protocol']['protocol_version'], 2)
         self.assertRegex(result['operation_id'], r'^[0-9a-f-]{36}$')
         self.assertEqual(state['metadata'], {**self.metadata, 'operation_id': result['operation_id'],
                                             'size_bytes': len(self.original), 'sha256': hashlib.sha256(self.original).hexdigest()})
@@ -216,7 +216,7 @@ class UploadTest(unittest.TestCase):
             self.assert_error('INVALID_PRIVATE_JSON', self.prepare)
 
     def test_04_contract_protocol_origin_generated_fields_limits(self):
-        for changes in [{'protocol_version': 2}, {'protocol_version': True}, {'method': 'GET'},
+        for changes in [{'protocol_version': 1}, {'protocol_version': True}, {'method': 'GET'},
                         {'url': 'https://foreign.test/upload'}, {'authorization': 'Bearer secret'},
                         {'generated_fields': ['operation_id', 'size_bytes']}, {'max_metadata_bytes': 131073},
                         {'max_metadata_bytes': 0}, {'max_metadata_bytes': 3.5}, {'max_metadata_bytes': True}]:
@@ -296,23 +296,23 @@ class UploadTest(unittest.TestCase):
             self.assertLessEqual(max(writes), 65536)
             self.assertEqual(len(server.requests[0]['body']), int(server.requests[0]['headers']['content-length']))
 
-    def test_08_changed_file_bad_session_unsafe_origin_before_http(self):
+    def test_08_changed_file_bad_authorization_unsafe_origin_before_http(self):
         with HTTPServer() as server:
             self.set_origin(server.origin)
             self.prepare()
             self.file.write_bytes(b'\0' * len(self.original))
             self.assert_error('FILE_CHANGED', self.send)
             self.file.write_bytes(self.original)
-            cases = [({'upload': {**self.session['upload'], 'url': 'https://other.example/upload'}}, 'SESSION_ORIGIN_MISMATCH'),
-                     ({'expires_at': 1}, 'SESSION_EXPIRED'), ({'expires_at': True}, 'INVALID_SESSION'),
-                     ({'token': 'invalid'}, 'INVALID_SESSION'),
-                     ({'upload': {**self.session['upload'], 'method': 'GET'}}, 'INVALID_SESSION'),
-                     ({'upload': {**self.session['upload'], 'protocol_version': 2}}, 'INVALID_SESSION'),
-                     ({'upload': {**self.session['upload'], 'protocol_version': True}}, 'INVALID_SESSION'),
-                     ({'upload': {'url': self.origin + '/upload', 'method': 'POST'}}, 'INVALID_SESSION'),
-                     ({'upload': {**self.session['upload'], 'url': self.origin + '/different'}}, 'INVALID_SESSION')]
+            cases = [({'upload': {**self.authorization['upload'], 'url': 'https://other.example/upload'}}, 'AUTHORIZATION_ORIGIN_MISMATCH'),
+                     ({'expires_at': 1}, 'AUTHORIZATION_EXPIRED'), ({'expires_at': True}, 'INVALID_AUTHORIZATION'),
+                     ({'token': 'invalid'}, 'INVALID_AUTHORIZATION'),
+                     ({'upload': {**self.authorization['upload'], 'method': 'GET'}}, 'INVALID_AUTHORIZATION'),
+                     ({'upload': {**self.authorization['upload'], 'protocol_version': 1}}, 'INVALID_AUTHORIZATION'),
+                     ({'upload': {**self.authorization['upload'], 'protocol_version': True}}, 'INVALID_AUTHORIZATION'),
+                     ({'upload': {'url': self.origin + '/mcp/upload', 'method': 'POST'}}, 'INVALID_AUTHORIZATION'),
+                     ({'upload': {**self.authorization['upload'], 'url': self.origin + '/different'}}, 'INVALID_AUTHORIZATION')]
             for changes, code in cases:
-                self.save(self.session_file, {**self.session, **changes})
+                self.save(self.authorization_file, {**self.authorization, **changes})
                 self.assert_error(code, self.send)
             for origin in ['http://example.com', 'https://u:p@example.com', 'https://example.com/path']:
                 self.assert_error('INVALID_ORIGIN', self.prepare, origin=origin)
@@ -327,7 +327,7 @@ class UploadTest(unittest.TestCase):
             self.prepare()
             before = self.state.read_bytes()
             credential_file = self.directory / 'authorization.json'
-            token = '.'.join([TOKEN] * 3)
+            token = TOKEN
             credentials = {'token': token, 'expires_at': int(time.time()) + 3600, 'upload': contract}
             self.save(credential_file, credentials)
             result = self.cli(['send', '--state-file', str(self.state), '--authorization-file', str(credential_file)])
@@ -347,32 +347,31 @@ class UploadTest(unittest.TestCase):
                 self.save(credential_file, {**credentials, **changes})
                 self.assert_error(code, send)
             self.assertEqual(len(server.requests), 1)
-            self.assert_error('INVALID_ARGUMENTS', upload.send_upload, state_file=str(self.state),
-                              session_file=str(self.session_file), authorization_file=str(credential_file))
+            rejected = self.cli(['send', '--state-file', str(self.state), '--session-file', str(credential_file)])
+            self.assertEqual(rejected.returncode, 1)
 
-    def test_09_v1_state_legacy_sessions_unchanged(self):
+    def test_09_legacy_state_uses_current_oauth_without_changing_saved_operation(self):
         with HTTPServer() as server:
             self.set_origin(server.origin)
             metadata = {**self.metadata, 'operation_id': 'legacy-operation', 'size_bytes': len(self.original),
                         'sha256': hashlib.sha256(self.original).hexdigest(), 'future': {'retained': None}}
-            self.save(self.state, {'version': 1, 'origin': self.origin, 'file': str(self.file), 'metadata': metadata})
-            before = self.state.read_bytes()
-            for session_upload in [{'url': self.origin + '/upload', 'method': 'POST', 'authorization': 'Bearer <token>',
-                                    'body': 'multipart', 'metadata_schema': {}, 'recovery': 'discovered'},
-                                   {'url': self.origin + '/upload', 'method': 'POST'}, self.session['upload']]:
-                self.save(self.session_file, {**self.session, 'upload': session_upload})
+            for state in [
+                    {'version': 1},
+                    {'version': 2, 'protocol': {'protocol_version': 1, 'method': 'POST',
+                                              'url': self.origin + '/upload', 'max_metadata_bytes': 16384}}]:
+                self.save(self.state, {**state, 'origin': self.origin, 'file': str(self.file), 'metadata': metadata})
+                before = self.state.read_bytes()
                 self.assertEqual(self.send()['exitCode'], 0)
                 sent = json.loads(server.requests[-1]['body'].split(b'\r\n\r\n')[1].split(b'\r\n--')[0])
                 self.assertEqual(sent, metadata)
+                self.assertTrue(server.requests[-1]['line'].startswith(b'POST /mcp/upload '))
+                self.assertEqual(server.requests[-1]['headers']['cf-access-token'], TOKEN)
                 self.assertEqual(self.state.read_bytes(), before)
-            for changes in [{'protocol_version': 2}, {'surprise': True}]:
-                self.save(self.session_file, {**self.session, 'upload': {'url': self.origin + '/upload', 'method': 'POST', **changes}})
-                self.assert_error('INVALID_SESSION', self.send)
 
     def test_10_private_file_security_all_four_inputs(self):
         self.prepare()
         exercised_links = []
-        for name, operation, argument in [('state', self.send, 'state_file'), ('session_file', self.send, 'session_file'),
+        for name, operation, argument in [('state', self.send, 'state_file'), ('authorization_file', self.send, 'authorization_file'),
                                           ('metadata_file', self.prepare, 'metadata_file'), ('contract_file', self.prepare, 'contract_file')]:
             filename = getattr(self, name)
             link = filename.with_suffix('.link')
@@ -415,14 +414,14 @@ class UploadTest(unittest.TestCase):
             prepared = self.cli(self.args(), env={**os.environ, 'PYTHONIOENCODING': 'ascii'})
             self.assertEqual(prepared.returncode, 0, prepared.stderr)
             operation_id = json.loads(prepared.stdout)['operation_id']
-            args = ['send', '--state-file', str(self.state), '--session-file', str(self.session_file)]
+            args = ['send', '--state-file', str(self.state), '--authorization-file', str(self.authorization_file)]
             for _index in range(2):
                 sent = self.cli(args)
                 self.assertEqual(sent.returncode, 0, sent.stderr)
                 self.assertEqual(json.loads(sent.stdout), {'operation_id': operation_id, 'transport_status': 'response_received', 'http_status': 200})
                 self.assertNotIn(TOKEN, sent.stdout + sent.stderr)
             for req in server.requests:
-                self.assertEqual(req['headers']['authorization'], 'Bearer ' + TOKEN)
+                self.assertEqual(req['headers']['cf-access-token'], TOKEN)
                 self.assertEqual(int(req['headers']['content-length']), len(req['body']))
                 self.assertLess(req['body'].find(b'name="metadata"'), req['body'].find(b'name="file"'))
                 self.assertIn(self.original, req['body'])
@@ -430,7 +429,7 @@ class UploadTest(unittest.TestCase):
             sent = self.cli(args)
             self.assertEqual(sent.returncode, 1)
             self.assertEqual(len(server.requests), 3)
-            self.assertTrue(all(req['line'].startswith(b'POST /upload ') for req in server.requests))
+            self.assertTrue(all(req['line'].startswith(b'POST /mcp/upload ') for req in server.requests))
             self.assertEqual(json.loads(sent.stdout)['http_status'], 307)
             self.assertNotIn(TOKEN, sent.stdout + sent.stderr)
             invalid = self.cli(['send', '--token', TOKEN])
@@ -526,7 +525,7 @@ class UploadTest(unittest.TestCase):
             prepared = self.prepare()
             before = self.state.read_bytes()
             child = subprocess.Popen([sys.executable, str(SCRIPT), 'send', '--state-file', str(self.state),
-                                      '--session-file', str(self.session_file)], cwd=self.directory,
+                                      '--authorization-file', str(self.authorization_file)], cwd=self.directory,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertTrue(server.ready.wait(5))
             child.send_signal(signal.SIGTERM)

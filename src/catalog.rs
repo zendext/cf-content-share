@@ -14,9 +14,6 @@ pub enum Action {
     ListOperations,
     GetOperation,
     RetryOperation,
-    CreateSession,
-    ListSessions,
-    RevokeSession,
     UploadAuthorization,
     Storage,
 }
@@ -95,38 +92,11 @@ pub fn definitions() -> Vec<Definition> {
         Definition {
             operation: Action::UploadAuthorization,
             name: "upload.authorization",
-            description: "取得当前已登录 MCP 请求的 Cloudflare Access 凭据，用于验证共享授权上传",
+            description: "取得当前已登录 MCP 请求的 Cloudflare Access 凭据，用于上传文件",
             schema: schema(json!({}), &[]),
             result: "token 为本次已验证的 Access JWT；expires_at 来自 JWT；upload 为 HTTP 上传契约",
-            side_effects: "不签发 Token、不保存会话；凭据具有 MCP 管理权限，必须保存为私有文件，不能输出或放入命令参数；尚未替换现有上传会话流程",
+            side_effects: "不签发 Token、不保存会话；凭据具有 MCP 管理权限，必须保存为私有文件，不能输出或放入命令参数",
             example: json!({}),
-        },
-        Definition {
-            operation: Action::CreateSession,
-            name: "session.create",
-            description: "建立 24 小时多文件上传会话",
-            schema: schema(json!({"client":string(256)}), &[]),
-            result: "session_id、仅本次返回的 token、created_at、expires_at、HTTP 上传协议与 metadata Schema",
-            side_effects: "只持久保存 Token 摘要；OAuth 撤销不自动撤销会话",
-            example: json!({"client":"Codex"}),
-        },
-        Definition {
-            operation: Action::ListSessions,
-            name: "session.list",
-            description: "分页列出上传会话；不返回凭据",
-            schema: page(json!({})),
-            result: "items、has_more、next_cursor",
-            side_effects: "无",
-            example: json!({"limit":20}),
-        },
-        Definition {
-            operation: Action::RevokeSession,
-            name: "session.revoke",
-            description: "撤销会话，拒绝新的上传",
-            schema: schema(json!({"session_id":identifier()}), &["session_id"]),
-            result: "撤销后的会话信息",
-            side_effects: "已受理上传仍可收尾",
-            example: json!({"session_id":"session-id"}),
         },
         Definition {
             operation: Action::Storage,
@@ -389,18 +359,10 @@ pub fn resource_result_semantics() -> Value {
 
 pub fn upload_contract(origin: &str) -> Value {
     json!({
-        "protocol_version":1,"url":format!("{origin}/upload"),"method":"POST","authorization":"Bearer <token>",
+        "protocol_version":2,"url":format!("{origin}/mcp/upload"),"method":"POST","authorization":"Cf-Access-Token: <token>",
         "body":"multipart/form-data: metadata JSON first, then exactly one file part",
         "metadata_schema":upload_schema(),"generated_fields":["operation_id","size_bytes","sha256"],"max_metadata_bytes":MAX_METADATA_BYTES,
         "result_schema":operation_result_schema(),"result_semantics":resource_result_semantics(),
         "recovery":"Save operation_id, full metadata and exact local file bytes before upload. Always query operation.get after the HTTP attempt: HTTP status is not success and operation.get is authoritative. If NOT_FOUND, retain that ID and identical parameters for an explicit retransmission; do not mint a replacement ID. If steps.upload=needs_reupload and the resource is not deleted or expired, explicitly retransmit the identical parameters and bytes. For uploading/stored or other server-recoverable steps, poll operation.get or use operation.retry as appropriate; do not retransmit active uploads. Never replay deleted or expired resources as new uploads. Expired or rejected upload credentials require fresh authorization via MCP, not a new operation_id. The uploader does not automatically retransmit."
     })
-}
-
-pub fn oauth_upload_contract(origin: &str) -> Value {
-    let mut contract = upload_contract(origin);
-    contract["protocol_version"] = json!(2);
-    contract["url"] = json!(format!("{origin}/mcp/upload"));
-    contract["authorization"] = json!("Cf-Access-Token: <token>");
-    contract
 }

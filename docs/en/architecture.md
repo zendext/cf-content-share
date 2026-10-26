@@ -4,16 +4,19 @@
 
 ## Components and trust boundaries
 
-One Rust/Wasm Worker handles three endpoints and a five-minute Cron:
+One Rust/Wasm Worker handles these endpoints and a five-minute Cron:
 
 | Entry | Authentication and responsibility |
 | --- | --- |
 | `/mcp` | Access Managed OAuth; the Worker validates Access JWTs and handles `describe` / `invoke` |
+| `POST /mcp/upload` | Validation path for shared authorization; the same Access application and JWT checks |
 | `POST /upload` | The Worker validates an application Bearer token and streams to R2 |
 | `GET/HEAD /r/<id>` | Public access; check resource state before redirecting or serving bytes |
 | scheduled | Recover registered operations and clean up expired resources and files |
 
 Access protects only `/mcp`, not the entire domain. JWT checks cover signatures, issuer, audience and time. Upload tokens authorize only uploads, last 24 hours and are stored only as digests in D1. OAuth revocation does not automatically revoke issued upload sessions.
+
+`/mcp/upload` is under the existing Access path. `upload.authorization` returns the current MCP request's verified Cloudflare Access JWT and its actual `exp`, without issuing a token or creating a D1 session. The script sends it as `Cf-Access-Token`; Access forwards an assertion to the Worker, which repeats the same JWT checks. This credential has MCP management authority, not just upload authority. It is not an OAuth refresh token; use the returned expiration rather than assuming it matches the OAuth access token lifetime. Keep `/upload` and its sessions until the real client handoff is verified. Local tests that simulate Access headers do not establish live compatibility.
 
 ## Sources of state
 

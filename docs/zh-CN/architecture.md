@@ -4,16 +4,19 @@
 
 ## 组件与信任边界
 
-同一个 Rust/Wasm Worker 处理三条入口及五分钟 Cron：
+同一个 Rust/Wasm Worker 处理以下入口及五分钟 Cron：
 
 | 入口 | 认证与职责 |
 | --- | --- |
 | `/mcp` | Access Managed OAuth；Worker 验证 Access JWT，处理 `describe` / `invoke` |
+| `POST /mcp/upload` | 验证用的共享授权上传入口；同一 Access 应用和 JWT 校验 |
 | `POST /upload` | Worker 验证应用级 Bearer Token，流式写入 R2 |
 | `GET/HEAD /r/<id>` | 公开访问；检查资源状态后跳转或读取正文 |
 | scheduled | 恢复已登记操作，清理到期资源和文件 |
 
 Access 只保护 `/mcp`，不把整个域名置于登录墙后。JWT 校验包括签名、issuer、audience 和时间。上传 Token 仅用于上传，有效期固定 24 小时，D1 只保存摘要。OAuth 撤销不自动撤销已签发的上传会话。
+
+`/mcp/upload` 位于已有 Access 路径之下。`upload.authorization` 返回当前 MCP 请求中已验证的 Cloudflare Access JWT 及其实际 `exp`，不签发新 Token，不创建 D1 会话；脚本以 `Cf-Access-Token` 携带凭据，Access 向 Worker 传递断言后再次执行相同校验。这份凭据具有 MCP 管理权限，不限于上传。它不是 OAuth refresh token，其期限以返回值为准，不能假定与 OAuth access token 的期限相同。现有 `/upload` 和会话流程保留到真实客户端的交接验证完成；本地模拟 Access 请求头的测试不能证明线上交接成功。
 
 ## 状态来源
 

@@ -24,9 +24,14 @@ struct Claims {
     sub: String,
 }
 
+pub struct Access {
+    pub token: String,
+    pub expires_at: u64,
+}
+
 // Access owns OAuth; only its origin assertion is accepted here.
 // JWKS is fetched from configured issuer, never from untrusted JWT headers.
-pub async fn verify(req: &Request, env: &Env) -> Result<()> {
+pub async fn verify(req: &Request, env: &Env) -> Result<Access> {
     let invalid = || Error::RustError("invalid Access assertion".into());
     let token = req
         .headers()
@@ -100,5 +105,8 @@ pub async fn verify(req: &Request, env: &Env) -> Result<()> {
     if verified.as_bool() != Some(true) {
         return Err(invalid());
     }
-    Ok(())
+    Ok(Access {
+        token,
+        expires_at: claims.exp,
+    })
 }

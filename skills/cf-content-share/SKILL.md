@@ -50,6 +50,12 @@ Requires Python **3.12+**, using only the standard library with no npm, pip or v
 
 One session can upload multiple files; each intentional new share has independent state. The script issues neither OAuth nor sessions and does not call MCP. On POSIX, it rejects JSON readable by other users, symlinks at the final path and nonregular files. On Windows it also rejects final reparse points (including links and junctions) and nonregular files; callers enforce private ACLs. Socket inactivity times out after 30 seconds. Catchable network interruptions retain the operation ID and exit 2; after forced termination, use saved state to query MCP.
 
+## Validate uploads using the existing MCP login
+
+When the user explicitly requests this validation, discover `upload.authorization` and require upload protocol 2. Save its credential-free `upload` object as private `contract.json`, then prepare state using the same steps above. Invoke the operation through the existing authenticated MCP connection and save its structured result as private `authorization.json`. This returns the current Cloudflare Access credential without creating a session or requiring another OAuth login. It has MCP management authority; use its returned expiration, never print it or put it in command arguments, and never read the MCP client's private OAuth storage.
+
+Run `send --state-file /private/state.json --authorization-file /private/authorization.json` with this Skill's script. Keep the same origin, private-file, immutable-state and final `operation.get` checks. Do not combine protocol 1 state with protocol 2 authorization or manually edit state. If this operation is unavailable, report the missing validation path rather than silently creating an application session. This path has not replaced the default session workflow; distinguish local simulated Access tests from live client validation.
+
 ## Unknown outcomes and recovery
 
 Preserve original state and complete metadata. Discover and call `operation.get`, then use the current service `recovery` contract and operation result to decide whether to query again, resume server work, explicitly retransmit under the same operation, or report unavailability. Failed queries do not prove absence; HTTP success does not prove shareability.

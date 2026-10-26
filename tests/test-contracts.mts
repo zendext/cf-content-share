@@ -130,6 +130,11 @@ export type StatsResult = Page<StatsRow> & {
   diagnostics: string[];
 };
 export type Results = {
+  'upload.authorization': {
+    token: string;
+    expires_at: number;
+    upload: UploadContract;
+  };
   'resource.create_url': ResourceResult;
   'resource.get': ResourceResult;
   'resource.update': ResourceResult;

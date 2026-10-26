@@ -318,6 +318,38 @@ class UploadTest(unittest.TestCase):
                 self.assert_error('INVALID_ORIGIN', self.prepare, origin=origin)
             self.assertEqual(server.requests, [])
 
+    def test_08a_cloudflare_credential_uses_private_file_and_exact_header(self):
+        with HTTPServer() as server:
+            self.set_origin(server.origin)
+            contract = {**self.contract, 'protocol_version': 2, 'url': self.origin + '/mcp/upload',
+                        'authorization': 'Cf-Access-Token: <token>'}
+            self.save(self.contract_file, contract)
+            self.prepare()
+            before = self.state.read_bytes()
+            credential_file = self.directory / 'authorization.json'
+            token = '.'.join([TOKEN] * 3)
+            credentials = {'token': token, 'expires_at': int(time.time()) + 3600, 'upload': contract}
+            self.save(credential_file, credentials)
+            result = self.cli(['send', '--state-file', str(self.state), '--authorization-file', str(credential_file)])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(token, result.stdout + result.stderr)
+            self.assertEqual(server.requests[0]['headers']['cf-access-token'], token)
+            self.assertNotIn('authorization', server.requests[0]['headers'])
+            self.assertTrue(server.requests[0]['line'].startswith(b'POST /mcp/upload '))
+            self.assertEqual(self.state.read_bytes(), before)
+            send = lambda: upload.send_upload(state_file=str(self.state), authorization_file=str(credential_file))
+            for changes, code in [({'expires_at': 0}, 'AUTHORIZATION_EXPIRED'),
+                                  ({'token': token + '\r\nInjected: value'}, 'INVALID_AUTHORIZATION'),
+                                  ({'token': token + 'A' * 16384}, 'INVALID_AUTHORIZATION'),
+                                  ({'upload': {**contract, 'url': 'https://foreign.test/mcp/upload'}}, 'AUTHORIZATION_ORIGIN_MISMATCH'),
+                                  ({'upload': {**contract, 'authorization': 'Bearer <token>'}}, 'INVALID_AUTHORIZATION'),
+                                  ({'upload': {**contract, 'protocol_version': 1}}, 'INVALID_AUTHORIZATION')]:
+                self.save(credential_file, {**credentials, **changes})
+                self.assert_error(code, send)
+            self.assertEqual(len(server.requests), 1)
+            self.assert_error('INVALID_ARGUMENTS', upload.send_upload, state_file=str(self.state),
+                              session_file=str(self.session_file), authorization_file=str(credential_file))
+
     def test_09_v1_state_legacy_sessions_unchanged(self):
         with HTTPServer() as server:
             self.set_origin(server.origin)

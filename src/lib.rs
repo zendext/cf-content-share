@@ -25,7 +25,7 @@ pub fn error(code: &str, status: u16) -> Result<Response> {
 #[event(fetch)]
 async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     let result = match (req.method(), req.path().as_str()) {
-        (Method::Post, "/upload") => upload::handle(&mut req, &env).await,
+        (Method::Post, "/upload" | "/mcp/upload") => upload::handle(&mut req, &env).await,
         (_, "/mcp") => mcp::handle(&mut req, &env).await,
         (Method::Get | Method::Head, path) if path.starts_with("/r/") => {
             match public::read(&req, &path[3..], &env, &ctx).await {

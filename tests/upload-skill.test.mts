@@ -131,6 +131,21 @@ test('Python subprocess streams 16MiB over real HTTP to Rust/Wasm; MCP confirms 
         name: 'upload-skill',
         modulesRoot: '.',
         modules: [
+          {
+            type: 'ESModule',
+            path: 'tests/oauth-edge-fixture.mts',
+            contents: `import Worker from '../build/index.js';
+              export default class extends Worker {
+                fetch(request) {
+                  if (new URL(request.url).pathname !== '/mcp/upload') return super.fetch(request);
+                  const headers = new Headers(request.headers);
+                  headers.delete('Cf-Access-Jwt-Assertion');
+                  const token = headers.get('Cf-Access-Token');
+                  if (token) headers.set('Cf-Access-Jwt-Assertion', token);
+                  return super.fetch(new Request(request, {headers}));
+                }
+              }`,
+          },
           { type: 'ESModule', path: 'build/index.js' },
           { type: 'CompiledWasm', path: 'build/index_bg.wasm' },
         ],
@@ -292,15 +307,56 @@ test('Python subprocess streams 16MiB over real HTTP to Rust/Wasm; MCP confirms 
       assert.equal(await readFile(legacyStateFile, 'utf8'), legacyBefore);
     }
   }
+  const oauth = await tool('invoke', {
+    operation: 'upload.authorization',
+    arguments: {},
+  });
+  assert.equal(oauth.token, jwt);
+  const oauthFile = path.join(
+    path.dirname(f.sessionFile),
+    'authorization.json',
+  );
+  await saveJson(oauthFile, oauth);
+  await saveJson(f.contractFile, oauth.upload);
+  await saveJson(f.metadataFile, f.metadata);
+  const oauthUpload = { ...f, stateFile: `${f.stateFile}-oauth` };
+  const oauthBytes = Buffer.alloc(16 * 1024 * 1024, 0x6b);
+  await writeFile(f.file, oauthBytes);
+  const prepared = await prepareUpload(oauthUpload);
+  const sent = await cli([
+    'send',
+    '--state-file',
+    oauthUpload.stateFile,
+    '--authorization-file',
+    oauthFile,
+  ]);
+  assert.equal(sent.code, 0, sent.stderr);
+  assert(!sent.stdout.includes(jwt) && !sent.stderr.includes(jwt));
+  const recovered = await tool('invoke', {
+    operation: 'operation.get',
+    arguments: { operation_id: prepared.operation_id },
+  });
+  assert.equal(recovered.resource.accessible, true);
+  assert.equal(
+    sha(
+      new Uint8Array(
+        await (
+          await mf.dispatchFetch(`${f.origin}/r/${recovered.resource.id}`)
+        ).arrayBuffer(),
+      ),
+    ),
+    sha(oauthBytes),
+  );
   assert.equal(
     (
       await db
         .prepare('SELECT COUNT(*) AS n FROM resources')
         .first<{ n: number }>()
     )?.n,
-    3,
+    4,
   );
   await db.prepare('UPDATE upload_sessions SET revoked=1').run();
+  await writeFile(f.file, Buffer.alloc(0));
   const rejected = await sendUpload({ ...f, stateFile: `${f.stateFile}2` });
   assert.equal(rejected.exitCode, 1);
   assert.equal(rejected.result.http_status, 401);

@@ -20,6 +20,7 @@ MCP exposes only `describe` and `invoke`. The entries below are operation names,
 | `resource.update` | Edit title, description, tags, URL target or expiration |
 | `resource.delete` | Permanently mark a resource deleted and report KV/file cleanup |
 | `session.create` | Create a 24-hour upload session |
+| `upload.authorization` | Validate shared authorization using the current verified Cloudflare credential, without creating a session |
 | `session.list` | List sessions without credentials |
 | `session.revoke` | Revoke an upload session |
 | `operation.list` | Find ongoing operations or operations needing attention |

@@ -55,7 +55,18 @@ impl Stream for Input {
 const UPLOAD_LEASE: i64 = 120;
 
 pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
-    if !sessions::authorized(req, env).await? {
+    if req.path() == "/mcp/upload"
+        && let Some(origin) = req.headers().get("Origin")?
+        && origin != env.var("PUBLIC_ORIGIN")?.to_string()
+    {
+        return error("INVALID_ORIGIN", 403);
+    }
+    let authorized = if req.path() == "/mcp/upload" {
+        auth::verify(req, env).await.is_ok()
+    } else {
+        sessions::authorized(req, env).await?
+    };
+    if !authorized {
         return error("UNAUTHORIZED", 401);
     }
     let content_type = req.headers().get("Content-Type")?.unwrap_or_default();

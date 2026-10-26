@@ -50,6 +50,12 @@ description: 使用已连接的 cf-content-share MCP 分享网址、上传本地
 
 同一会话可用于多份文件；每份有意创建的新分享使用独立 state。脚本不签发 OAuth 或会话，也不调用 MCP。POSIX 私有 JSON 文件若可被其他用户读取、最终路径为符号链接或不是普通文件，脚本会拒绝；Windows 也拒绝最终路径的 reparse point（含链接、junction）及非普通文件，私有 ACL 由调用方保证。socket 无活动超时为 30 秒；可捕获的网络中断保留操作 ID 并返回 2，强制终止后沿用已保存 state 查询 MCP。
 
+## 验证复用 MCP 登录的上传
+
+用户明确要求验证时，发现 `upload.authorization`，要求上传协议 2。将其无凭据 `upload` 对象保存为私有 `contract.json`，按上述步骤 prepare。经现有已认证 MCP 调用该操作，将结构化结果保存为私有 `authorization.json`。它返回当前 Cloudflare Access 凭据，不创建会话，也不要求再次 OAuth 登录。该凭据具有 MCP 管理权限；按返回的实际期限使用，不输出、不放进命令参数，不读取 MCP 客户端的私有 OAuth 存储。
+
+使用本 Skill 的脚本执行 `send --state-file /私有目录/state.json --authorization-file /私有目录/authorization.json`，保留同 origin、私有文件、不可变 state 和最终 `operation.get` 检查。不能混用协议 1 state 与协议 2 凭据，也不能手工编辑 state。操作不存在时报告缺少验证入口，不静默创建应用会话。此入口尚未替代默认会话流程；分别报告本地模拟 Access 与真实客户端验证结果。
+
 ## 结果不明与恢复
 
 保留原 state 和完整 metadata。先发现并调用 `operation.get`，再按服务当次 `recovery` 与操作结果决定下一步：查询、服务端恢复、明确允许的同操作重传，或报告已不可用。查询失败不能推断操作不存在，HTTP 成功也不能推断可以分享。

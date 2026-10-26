@@ -20,6 +20,7 @@ MCP 仅暴露 `describe` 和 `invoke`。下表是 operation 名称，不是额�
 | `resource.update` | 修改标题、描述、标签、短链目标或有效期 |
 | `resource.delete` | 永久逻辑删除，查询 KV 与文件清理状态 |
 | `session.create` | 创建有效期 24 小时的上传会话 |
+| `upload.authorization` | 验证共享授权上传；返回本次已验证的 Cloudflare 凭据，不创建会话 |
 | `session.list` | 分页列出会话，不返回凭据 |
 | `session.revoke` | 撤销上传会话 |
 | `operation.list` | 查询处理中或需要处理的操作 |

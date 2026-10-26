@@ -28,6 +28,12 @@ D1 只保存 Token 的 SHA-256。应用 Token 仅能上传；OAuth 撤销不会�
 
 已保存 state 的元数据不得编辑；恢复必须沿用原 ID、参数及文件字节。源文件或用户要求改变时先处理旧操作，再决定是否有意创建新分享。更新时同步 Skill 和上传脚本；兼容传输协议范围内的业务字段变化由发现契约承载，不要求本地代码同步。
 
+## 验证复用 MCP 登录的上传
+
+`describe(operation=upload.authorization)` 返回协议 2 的无凭据上传契约；`invoke` 同名操作返回当前已验证的 Cloudflare Access JWT、其实际 `expires_at` 以及相同契约，不创建会话。将契约和凭据分别保存为私有 `contract.json`、`authorization.json`，沿用上述 prepare，再执行 `send --state-file <私有 state> --authorization-file <私有 authorization.json>`。脚本只向契约中同 origin 的 `/mcp/upload` 发送 `Cf-Access-Token`，不会登录或刷新 OAuth，也不读取 MCP 客户端的私有凭据。
+
+该凭据具有 MCP 管理权限。过期后经已登录 MCP 再取当前凭据，保留原操作标识、元数据和文件；重新发送前仍查询 `operation.get`。协议 1 和协议 2 的 state 与传输契约不能混用或手工修改。该入口用于验证真实客户端交接，尚未替代现有上传会话流程。
+
 ## 资源有效期
 
 `retention_seconds` 省略表示 2592000 秒（30 天），正的安全整数表示自定义时长，显式 `null` 表示永久；发布时间与时长相加必须在安全整数范围内。首次成功发布时在 D1 内固定 `published_at` 和 `expires_at`，等待、重传与恢复不消耗新资源的保留时长，也不重新计时。

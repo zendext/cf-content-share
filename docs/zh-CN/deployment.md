@@ -43,7 +43,7 @@ Token 放在仓库外普通文件中，权限必须为 `0600`，通过 `--token-
 1. 复用现有 Zero Trust 团队，不重命名或重建。缺失时按使用者指定的团队名创建。
 2. 复用或添加 Cloudflare IdP，启用 **Restrict to account members**。准入邮箱必须属于账户，不自动放宽策略。
 3. 建立 Self-hosted Access 应用，只保护分享主机的 `mcp` 路径。唯一 Allow 策略用 **Emails** 指定本人完整邮箱，只选择上述 IdP。检查父级应用未拦截 `/r/*`、`/upload` 和 OAuth 发现路径；不使用 Everyone、宽泛邮箱域或 Bypass 代替个人认证。
-4. 启用 **Managed OAuth**，按实际客户端需要允许 localhost、loopback 或明确的 HTTPS redirect URI。明确配置 access token 和 grant session 的期限，验证刷新能力。复制团队 issuer 与 Application Audience (AUD)。
+4. 启用 **Managed OAuth**，按实际客户端需要允许 localhost、loopback 或明确的 HTTPS redirect URI。将 OAuth access token 期限设为 `15m`、grant session 期限设为 `336h`（14 天），验证静默刷新。grant 期限决定何时需要重新登录，不代表单份 access token 有效 14 天。复制团队 issuer 与 Application Audience (AUD)。
 5. 分享主机使用 proxied DNS 和 `<host>/*` Worker Route；专用无源站子域名可使用 AAAA `100::` 占位。现有不同目标、Route 或 Custom Domain 不直接覆盖。DNS 与 Access 需要通过控制台或 API 单独配置，初始化脚本不处理它们。
 
 参考：[Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/)、[IdP](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/cloudflare/)、[Access 路径](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/)、[Worker Routes](https://developers.cloudflare.com/workers/configuration/routing/routes/)。

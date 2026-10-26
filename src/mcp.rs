@@ -26,9 +26,9 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
     {
         return error("INVALID_ORIGIN", 403);
     }
-    if auth::verify(req, env).await.is_err() {
+    let Ok(access) = auth::verify(req, env).await else {
         return error("UNAUTHORIZED", 401);
-    }
+    };
     if req.method() != Method::Post {
         let mut response = error("METHOD_NOT_ALLOWED", 405)?;
         response.headers_mut().set("Allow", "POST")?;
@@ -122,6 +122,11 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                                         &env.var("PUBLIC_ORIGIN")?.to_string(),
                                     )
                                 }
+                                catalog::Action::UploadAuthorization => {
+                                    detail["upload"] = catalog::oauth_upload_contract(
+                                        &env.var("PUBLIC_ORIGIN")?.to_string(),
+                                    )
+                                }
                                 catalog::Action::GetOperation => {
                                     detail["resultSchema"] = catalog::operation_result_schema();
                                     detail["result_semantics"] =
@@ -142,7 +147,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
                     },
                 }
             }
-            Some("invoke") => invoke(&value["params"]["arguments"], env).await?,
+            Some("invoke") => invoke(&value["params"]["arguments"], env, &access).await?,
             _ => return rpc_error(id, -32602, "Unknown tool"),
         },
         _ => return rpc_error(id, -32601, "Method not found"),
@@ -150,7 +155,7 @@ pub async fn handle(req: &mut Request, env: &Env) -> Result<Response> {
     json_response(&json!({"jsonrpc":"2.0","id":id,"result":result}), 200)
 }
 
-async fn invoke(input: &Value, env: &Env) -> Result<Value> {
+async fn invoke(input: &Value, env: &Env, access: &auth::Access) -> Result<Value> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Invoke {
@@ -177,6 +182,11 @@ async fn invoke(input: &Value, env: &Env) -> Result<Value> {
         Action::CreateSession => sessions::create(env, a).await,
         Action::ListSessions => sessions::list(env, a).await,
         Action::RevokeSession => sessions::revoke(env, a["session_id"].as_str().unwrap()).await,
+        Action::UploadAuthorization => Ok(json!({
+            "token":access.token,
+            "expires_at":access.expires_at,
+            "upload":catalog::oauth_upload_contract(&env.var("PUBLIC_ORIGIN")?.to_string())
+        })),
         Action::Storage => store::storage(env).await,
         Action::CreateUrl => resources::create(env, a).await,
         Action::ListResources => resources::list(env, a, false).await,

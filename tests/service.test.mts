@@ -493,7 +493,7 @@ test('two tools discover strict operation schemas, results, side effects and val
     ['describe', 'invoke'],
   );
   const catalog = await client.callTool({ name: 'describe', arguments: {} });
-  assert.equal((catalog.structuredContent as Catalog).operations.length, 14);
+  assert.equal((catalog.structuredContent as Catalog).operations.length, 15);
   assert.equal(
     (catalog.structuredContent as Catalog).defaults.mapping_freshness_seconds,
     86400,
@@ -1168,6 +1168,108 @@ async function uploaded(data: Buffer, changes: Record<string, unknown> = {}) {
   assert.equal(response.status, 201, await response.clone().text());
   return { ...((await response.json()) as ResourceResult), token, form };
 }
+
+test('MCP exports only its verified Access assertion without creating a session; OAuth upload shares JWT validation', async () => {
+  const token = jwt();
+  const before = await db
+    .prepare('SELECT count(*) AS n FROM upload_sessions')
+    .first();
+  const statements: D1Event[] = [];
+  onD1Before = (event) => {
+    statements.push(event);
+  };
+  let response: Awaited<ReturnType<typeof rpc>>;
+  try {
+    response = await rpc(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'invoke',
+          arguments: { operation: 'upload.authorization', arguments: {} },
+        },
+      },
+      token,
+    );
+  } finally {
+    onD1Before = undefined;
+  }
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const result = (await response.json()) as {
+    result: {
+      isError: boolean;
+      structuredContent: Results['upload.authorization'];
+    };
+  };
+  assert.equal(result.result.isError, false);
+  const authorization = result.result.structuredContent;
+  assert.equal(authorization.token, token);
+  assert.equal(
+    authorization.expires_at,
+    JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).exp,
+  );
+  assert.equal(authorization.upload.url, `${origin}/mcp/upload`);
+  assert.equal(authorization.upload.protocol_version, 2);
+  assert.equal(authorization.upload.authorization, 'Cf-Access-Token: <token>');
+  assert.deepEqual(statements, []);
+  assert.deepEqual(
+    await db.prepare('SELECT count(*) AS n FROM upload_sessions').first(),
+    before,
+  );
+  const descriptor = (
+    await client.callTool({
+      name: 'describe',
+      arguments: { operation: 'upload.authorization' },
+    })
+  ).structuredContent as Descriptor;
+  assert.deepEqual(descriptor.upload, authorization.upload);
+  assert(!JSON.stringify(descriptor).includes(token));
+  const form = multipart(Buffer.from('MCP OAuth credential handoff'));
+  const send = (credential?: string, extra = {}) =>
+    request('/mcp/upload', {
+      method: 'POST',
+      headers: {
+        'content-type': form.contentType,
+        ...(credential === undefined
+          ? {}
+          : { 'cf-access-jwt-assertion': credential }),
+        ...extra,
+      },
+      body: form.body,
+    });
+  for (const invalid of [
+    undefined,
+    jwt({ exp: 0 }),
+    jwt({ aud: ['wrong-audience'] }),
+    jwt({ iss: 'https://untrusted.cloudflareaccess.com' }),
+    `${token.slice(0, -10)}invalidsig`,
+  ]) {
+    const rejected = await send(invalid);
+    assert.equal(rejected.status, 401);
+    assert(!(await rejected.text()).includes(token));
+  }
+  assert.equal(
+    (await send(undefined, { authorization: `Bearer ${token}` })).status,
+    401,
+  );
+  assert.equal(
+    (await send(token, { origin: 'https://untrusted.example' })).status,
+    403,
+  );
+  const accepted = await send(authorization.token);
+  assert.equal(accepted.status, 201, await accepted.clone().text());
+  const published = await call('operation.get', {
+    operation_id: form.metadata.operation_id,
+  });
+  assert.equal(published.resource.accessible, true);
+  assert.equal(
+    await (await request(`/r/${published.resource.id}`)).text(),
+    'MCP OAuth credential handoff',
+  );
+  assert.equal((await send(authorization.token)).status, 200);
+});
 
 test('upload discovery is read-only, credential-free and identical to the created session contract', async () => {
   const before = await db

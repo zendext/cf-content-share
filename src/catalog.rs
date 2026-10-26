@@ -17,6 +17,7 @@ pub enum Action {
     CreateSession,
     ListSessions,
     RevokeSession,
+    UploadAuthorization,
     Storage,
 }
 
@@ -90,6 +91,15 @@ pub fn definitions() -> Vec<Definition> {
             result: "items 保留原始 Referer、地区和 _sample_interval；has_more 不代表全部访问或快照",
             side_effects: "只读；游标绑定窗口和所有筛选",
             example: json!({"start":1791676800,"end":1791763200,"limit":20}),
+        },
+        Definition {
+            operation: Action::UploadAuthorization,
+            name: "upload.authorization",
+            description: "取得当前已登录 MCP 请求的 Cloudflare Access 凭据，用于验证共享授权上传",
+            schema: schema(json!({}), &[]),
+            result: "token 为本次已验证的 Access JWT；expires_at 来自 JWT；upload 为 HTTP 上传契约",
+            side_effects: "不签发 Token、不保存会话；凭据具有 MCP 管理权限，必须保存为私有文件，不能输出或放入命令参数；尚未替换现有上传会话流程",
+            example: json!({}),
         },
         Definition {
             operation: Action::CreateSession,
@@ -383,6 +393,14 @@ pub fn upload_contract(origin: &str) -> Value {
         "body":"multipart/form-data: metadata JSON first, then exactly one file part",
         "metadata_schema":upload_schema(),"generated_fields":["operation_id","size_bytes","sha256"],"max_metadata_bytes":MAX_METADATA_BYTES,
         "result_schema":operation_result_schema(),"result_semantics":resource_result_semantics(),
-        "recovery":"Save operation_id, full metadata and exact local file bytes before upload. Always query operation.get after the HTTP attempt: HTTP status is not success and operation.get is authoritative. If NOT_FOUND, retain that ID and identical parameters for an explicit retransmission; do not mint a replacement ID. If steps.upload=needs_reupload and the resource is not deleted or expired, explicitly retransmit the identical parameters and bytes. For uploading/stored or other server-recoverable steps, poll operation.get or use operation.retry as appropriate; do not retransmit active uploads. Never replay deleted or expired resources as new uploads. An expired/revoked session requires a new session token, not a new operation_id. The uploader does not automatically retransmit."
+        "recovery":"Save operation_id, full metadata and exact local file bytes before upload. Always query operation.get after the HTTP attempt: HTTP status is not success and operation.get is authoritative. If NOT_FOUND, retain that ID and identical parameters for an explicit retransmission; do not mint a replacement ID. If steps.upload=needs_reupload and the resource is not deleted or expired, explicitly retransmit the identical parameters and bytes. For uploading/stored or other server-recoverable steps, poll operation.get or use operation.retry as appropriate; do not retransmit active uploads. Never replay deleted or expired resources as new uploads. Expired or rejected upload credentials require fresh authorization via MCP, not a new operation_id. The uploader does not automatically retransmit."
     })
+}
+
+pub fn oauth_upload_contract(origin: &str) -> Value {
+    let mut contract = upload_contract(origin);
+    contract["protocol_version"] = json!(2);
+    contract["url"] = json!(format!("{origin}/mcp/upload"));
+    contract["authorization"] = json!("Cf-Access-Token: <token>");
+    contract
 }

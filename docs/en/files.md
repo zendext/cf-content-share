@@ -28,6 +28,12 @@ The transport summary is `{operation_id, transport_status, http_status?, error_c
 
 Never edit saved state metadata. Recovery preserves the original ID, parameters and file bytes. If the source or user requirements change, resolve the old operation before deciding to create another share. Update the Skill and helper together; compatible business-field changes are then carried by discovery without requiring local code updates.
 
+## Validate uploads using the existing MCP login
+
+`describe(operation=upload.authorization)` returns a credential-free protocol 2 upload contract. Invoking that operation returns the current verified Cloudflare Access JWT, its actual `expires_at`, and the same contract without creating a session. Save the contract and credential separately as private `contract.json` and `authorization.json`, use prepare as above, then run `send --state-file <private-state> --authorization-file <private-authorization.json>`. The script sends `Cf-Access-Token` only to the contract's same-origin `/mcp/upload` endpoint. It neither logs in nor refreshes OAuth and never reads the MCP client's private credentials.
+
+The credential has MCP management authority. If it expires, obtain the current credential through authenticated MCP while preserving the operation ID, metadata and file, and still query `operation.get` before any retransmission. Do not mix protocol 1 and protocol 2 states and transport contracts or edit saved state. This path validates the real client handoff; it has not replaced existing upload sessions.
+
 ## Resource lifetime
 
 Omitting `retention_seconds` means 2592000 seconds (30 days); a positive safe integer specifies a custom lifetime and explicit `null` means permanent. Publication time plus retention must remain a safe integer. D1 fixes `published_at` and `expires_at` at first successful publication. Waiting, retransmission and recovery neither consume a new resource's lifetime nor restart it.
